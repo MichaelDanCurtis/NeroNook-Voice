@@ -10,5 +10,9 @@
     "Copies reviewed text or sends it to a permitted text assistant",
     "Optionally speaks replies using installed system voices"
   ],
-  "launchMode": "application"
+  "launchMode": "application",
+  "icon": {
+    "symbol": "waveform",
+    "color": "FFA2C9"
+  }
 }
