@@ -1,0 +1,14 @@
+{
+  "id": "cafe.nero.plugin.voice",
+  "name": "Nero Voice",
+  "version": "0.1.0",
+  "apiVersion": 1,
+  "summary": "Local push-to-talk, editable dictation and optional spoken answers through your chosen module.",
+  "capabilities": [
+    "Records your chosen microphone only after Record or push-to-talk",
+    "Transcribes locally with Apple Speech on supported Macs",
+    "Copies reviewed text or sends it to a permitted text assistant",
+    "Optionally speaks replies using installed system voices"
+  ],
+  "launchMode": "application"
+}
