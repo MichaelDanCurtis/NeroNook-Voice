@@ -160,6 +160,13 @@ import NookPluginSDK
         speaker.speak(utterance); speaking = true; status = "Reading reply aloud"
     }
     func stopSpeaking() { speaker.stopSpeaking(at: .immediate); speaking = false }
-    func refreshSpeechState() { if speaking && !speaker.isSpeaking { speaking = false; status = "Reply ready" } }
+    func refreshSpeechState() {
+        if session.phase == .listening, let signal = pipeline?.inputSignal {
+            if signal.age > 3 { fail("The microphone stopped delivering audio. Choose a microphone in Voice settings and try again.", token: session.token); return }
+            let device = microphones.first { microphone.isEmpty ? $0.isDefault : $0.id == microphone }?.name ?? "Microphone"
+            status = "Listening · \(device) · input \(Int(signal.level * 100))%"
+        }
+        if speaking && !speaker.isSpeaking { speaking = false; status = "Reply ready" }
+    }
     func shutdown() { cancel(); hotkey.stop(); lifecycleObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) } }
 }

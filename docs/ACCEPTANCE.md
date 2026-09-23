@@ -1,3 +1,19 @@
+# Microphone capture correction — September 23, 2026
+
+Version 0.1.1 installed: `cafe.nero.plugin.voice-0.1.1-a3dc339e46f2.app`.
+
+The owner reported Record starting without words. Live process logs established a 48 kHz input hardware / 96 kHz client format mismatch, followed by "Failed to create tap, config change pending!" The monitor output was 96 kHz and the MacBook microphone was 48 kHz. The earlier engine-start and silent-stop check did **not** prove that microphone buffers arrived; that acceptance claim was insufficient.
+
+Changed the tap/converter format source from the input node's output/client format to its hardware input format. Listening now waits for actual buffers (three-second startup deadline); a stalled feed also stops after three seconds. The status line identifies the microphone and current input level. Capture statistics store only count/time/level, never audio or transcript content. Interleaved and planar float samples are supported by the meter.
+
+Verified on the installed signed 0.1.1 app: real microphone buffers arrive, live words appear, input level updated (44% observed), and Stop returns an editable finalized transcript. No transcript text is copied into this record or sent to an assistant. New process logs no longer show the hardware/client mismatch or failed-tap message. The 48 kHz reference-audio regression through the production conversion/finalization path recognizes its complete synthetic phrase, including its last words. Nine existing core tests and the signed-process handshake/snapshot/EOF check pass. SDK Ask permission was re-enabled for the new package.
+
+A controlled human phrase/accuracy benchmark, all microphone devices, unplug/sleep and long-held shortcut acceptance remain separate follow-ups. The observed live words establish real microphone-to-recognizer delivery, beyond the earlier silence-only check.
+
+Reference: Apple's [AVAudioInputNode documentation](https://developer.apple.com/documentation/avfaudio/avaudioinputnode) identifies the input scope as the hardware format and requires its output scope to match when rendering from a device.
+
+---
+
 # Local acceptance — September 23, 2026
 
 Independent Nero Voice 0.1.0, macOS 27, Xcode SDK 27, NeroNook host 0.17.0. Final local package: `cafe.nero.plugin.voice-0.1.0-1548f6b48189.app`.

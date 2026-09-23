@@ -9,6 +9,10 @@ import ModuleCore
 private final class AudioBridge: @unchecked Sendable {
     private let lock = NSLock()
     private var active = true
+    private var buffers = 0
+    private var lastBuffer = Date.distantPast
+    private var level = 0.0
+    func signal() -> (count: Int, age: TimeInterval, level: Double) { lock.lock(); defer { lock.unlock() }; return (buffers, Date().timeIntervalSince(lastBuffer), level) }
     private let converter: AVAudioConverter
     private let outputFormat: AVAudioFormat
     private let continuation: AsyncThrowingStream<AnalyzerInput, Error>.Continuation
@@ -20,6 +24,15 @@ private final class AudioBridge: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard active else { return }
         guard input.frameLength > 0, input.frameLength <= 8192, input.format.channelCount <= 8 else { fail("Unsupported microphone buffer."); return }
+        buffers += 1; lastBuffer = Date()
+        var peak: Float = 0
+        if let channels = input.floatChannelData {
+            for channel in 0..<Int(input.format.channelCount) {
+                let samples = channels[input.format.isInterleaved ? 0 : channel]
+                for frame in 0..<Int(input.frameLength) { peak = max(peak, abs(samples[frame * input.stride + (input.format.isInterleaved ? channel : 0)])) }
+            }
+        }
+        level = peak > 0 ? max(0, min(1, (20 * log10(Double(peak)) + 60) / 60)) : 0
         let frames = Double(input.frameLength) * outputFormat.sampleRate / input.format.sampleRate
         guard frames.isFinite, frames > 0, frames < 65536,
               let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: AVAudioFrameCount(frames) + 64) else { fail("Invalid microphone format."); return }
@@ -58,6 +71,7 @@ private final class AudioBridge: @unchecked Sendable {
     private var cancelled = false
     private var configurationObserver: NSObjectProtocol?
     public init() {}
+    public var inputSignal: (count: Int, age: TimeInterval, level: Double)? { bridge?.signal() }
     public static func prepare(localeIdentifier: String, install: Bool) async throws -> SpeechTranscriber {
         guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: localeIdentifier)) else { throw VoiceProblem.message("Apple Speech does not support this language on this Mac.") }
         try Task.checkCancellation()
@@ -79,7 +93,9 @@ private final class AudioBridge: @unchecked Sendable {
         var deviceID = device
         let result = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &deviceID, UInt32(MemoryLayout.size(ofValue: deviceID)))
         guard result == noErr else { throw VoiceProblem.message("Could not select the microphone (\(result)).") }
-        let inputFormat = engine.inputNode.outputFormat(forBus: 0)
+        // Hardware input, not the client/output format inherited from speakers.
+        // On this Mac the HDMI output is 96 kHz while the microphone is 48 kHz.
+        let inputFormat = engine.inputNode.inputFormat(forBus: 0)
         guard inputFormat.sampleRate >= 8000, inputFormat.sampleRate <= 192000, inputFormat.channelCount > 0, inputFormat.channelCount <= 8,
               let outputFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber], considering: inputFormat) else { throw VoiceProblem.message("The microphone has no usable speech format.") }
         try Task.checkCancellation(); guard !cancelled else { throw CancellationError() }
@@ -109,12 +125,20 @@ private final class AudioBridge: @unchecked Sendable {
                 guard let self, self.started, !self.cancelled, let engine = self.engine else { return }
                 // Selecting/starting an input also posts this notification. Ignore
                 // those queued notices while the selected route is still healthy.
-                let current = engine.inputNode.outputFormat(forBus: 0)
+                let current = engine.inputNode.inputFormat(forBus: 0)
                 let selected = MicrophoneDeviceService.deviceID(for: microphone)
                 if engine.isRunning, selected == device, current == inputFormat { return }
                 self.cancel(); failure("The microphone changed or disconnected. Review the partial transcript, then record again.")
             }
         }
+        // A running engine does not prove that installTap attached successfully.
+        // Never show Listening until real (possibly silent) buffers arrive.
+        for _ in 0..<60 {
+            try Task.checkCancellation(); guard !cancelled else { throw CancellationError() }
+            if bridge.signal().count > 0 { return }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        throw VoiceProblem.message("The microphone is not delivering audio. Choose a microphone in Voice settings, then try again.")
     }
     private func stopCapture() {
         if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }; configurationObserver = nil
