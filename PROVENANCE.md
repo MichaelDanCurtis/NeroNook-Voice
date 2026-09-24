@@ -12,3 +12,7 @@ SpeechPipeline and VoiceSession adapt the capture/volatile-final transcript/life
 Reviewed OmniVoice's `TextInsertionService.swift`, `TextInsertionEdit.swift` and `TextInsertionTargetPolicy.swift` at the same d3b5940 revision. DictationEdit adapts its UTF-16 replacement planning, with explicit surrogate-boundary and stale-selection checks. DictationInsertion adapts captured-target and transient-clipboard ideas; it deliberately does not carry over current-focus fallback, whole-field replacement, synthetic Unicode typing or unconditional undo. All code ships inside the independent Voice package; OmniVoice remains untouched.
 
 The floating overlay uses Apple's [nonactivating panel behavior](https://developer.apple.com/documentation/appkit/nspanel/becomeskeyonlyifneeded). Permission setup uses [AXIsProcessTrustedWithOptions](https://developer.apple.com/documentation/applicationservices/1459186-axisprocesstrustedwithoptions); permission is requested by the explicit settings button, never at launch.
+
+## 0.2.1 focus lookup
+
+Adapted OmniVoice's system-wide Accessibility focused-element lookup from the same reviewed d3b5940 source. Capture derives the owning process from that element, and revalidation requires the identical focused element. No fallback paste target or automatic Send is added.

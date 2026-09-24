@@ -2,7 +2,7 @@
 
 Independent NeroNook voice module for macOS 26 or newer. It adapts the owner's OmniVoice native speech and microphone components; OmniVoice does not need to be installed. NeroNook also continues to work without this module.
 
-## Dictation into other apps (0.2.0)
+## Dictation into other apps (0.2.1)
 
 In Voice settings, choose a shortcut and either **Hold to talk** or **Press to start / stop**, then enable **Insert shortcut dictation at the original cursor**. Allow text insertion in macOS Accessibility. Place the cursor in another app and use the shortcut; wait for Listening before speaking. The floating overlay leaves keyboard focus in that app. Finishing pastes the finalized transcript locally; it never presses Send. Record in the Voice window still produces a draft for review.
 

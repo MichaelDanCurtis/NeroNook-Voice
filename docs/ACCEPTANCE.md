@@ -1,3 +1,15 @@
+# Focus correction and owner acceptance 0.2.1 — September 23, 2026
+
+macOS Accessibility is now granted by the owner and the installed plugin reports Text insertion allowed. Focus capture and revalidation now use the system-wide accessibility focused element, matching OmniVoice's approach, instead of first choosing NSWorkspace's frontmost application. The captured field, text and cursor checks remain in place.
+
+The owner directly confirmed: “Insertion and Undo both work.” This accepts the manual Insert draft / Undo check; it does not establish every editor, shortcut timing, speech accuracy or clipboard-format restoration. The automated UI check did not successfully focus TextEdit: its countdown inserted the harmless fixture into the Chrome search field that actually held keyboard focus. No Search/Send was invoked; the fixture was removed and the empty field verified. This is not recorded as automated TextEdit acceptance. The countdown targets the field focused at its end, as described by the UI.
+
+17 tests, signed release packaging and signed-process handshake/SDK validation/three snapshots/clean EOF pass. Package `cafe.nero.plugin.voice-0.2.1-900bab397daa.app` is installed and Running through the normal host review. The previous package remains available for recovery. The owner's original draft was restored after the update without submitting it. The prior Ask ChatGPT action grant was restored with the same scope; Voice settings show Ask ChatGPT available. No assistant call was made.
+
+Remaining: broad browser/Electron editor acceptance, live clipboard-format and intervening-copy checks, controlled human speech/held-key tests, selected-text rewriting, cleanup/styles and recoverable transcript history. Logs are local ignored `build/focus-*.log`; no personal transcript is included in this record.
+
+---
+
 # Dictation insertion 0.2.0 — September 23, 2026
 
 First slice of the reopened Voice experience review: hold/toggle dictation to the captured cursor, nonactivating overlay, unchanged-target checks, temporary clipboard preservation, verified undo and explicit delayed draft insertion. Review/Copy/Ask remain separate; no assistant submission or ambient capture is added.

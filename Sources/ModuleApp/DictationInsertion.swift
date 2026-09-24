@@ -24,9 +24,13 @@ import ModuleCore
     }
     func capture() throws -> Target {
         guard permitted else { throw problem("Enable Accessibility for Nero Voice in Voice settings to dictate into other apps.") }
-        guard let app = NSWorkspace.shared.frontmostApplication,
-              app.processIdentifier != ProcessInfo.processInfo.processIdentifier,
-              let element = focused(app.processIdentifier) else {
+        guard let element = focused() else {
+            throw problem("macOS did not expose a focused text field. Click inside the destination editor, then try again.")
+        }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success,
+              pid != ProcessInfo.processInfo.processIdentifier,
+              let app = NSRunningApplication(processIdentifier: pid) else {
             throw problem("Place the cursor in another app, then use your dictation shortcut.")
         }
         let state = try textState(element)
@@ -67,16 +71,18 @@ import ModuleCore
         guard try validate(target).0 == edit.before else { throw problem("Undo was sent but could not be confirmed. Check the destination app.") }
     }
     private func validate(_ target: Target) throws -> (String, NSRange) {
-        guard permitted, NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid,
-              let live = focused(target.pid), CFEqual(live, target.element) else {
+        guard permitted, let live = focused(), CFEqual(live, target.element) else {
             throw problem("Focus changed. Your transcript is kept in Nero Voice; nothing is pasted into the new app.")
         }
         return try textState(live)
     }
-    private func focused(_ pid: pid_t) -> AXUIElement? {
-        let app = AXUIElementCreateApplication(pid)
-        AXUIElementSetMessagingTimeout(app, 0.5)
-        guard let result = attribute(app, kAXFocusedUIElementAttribute), CFGetTypeID(result) == AXUIElementGetTypeID() else { return nil }
+    private func focused() -> AXUIElement? {
+        // Nonactivating panels and accessory apps can have a different active
+        // application from the actual keyboard focus. As in OmniVoice, ask the
+        // system-wide accessibility element for the authoritative focused field.
+        let system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, 0.5)
+        guard let result = attribute(system, kAXFocusedUIElementAttribute), CFGetTypeID(result) == AXUIElementGetTypeID() else { return nil }
         return (result as! AXUIElement)
     }
     private func textState(_ element: AXUIElement) throws -> (String, NSRange) {
