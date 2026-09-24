@@ -1,3 +1,13 @@
+# Dictation insertion 0.2.0 — September 23, 2026
+
+First slice of the reopened Voice experience review: hold/toggle dictation to the captured cursor, nonactivating overlay, unchanged-target checks, temporary clipboard preservation, verified undo and explicit delayed draft insertion. Review/Copy/Ask remain separate; no assistant submission or ambient capture is added.
+
+Validation so far: 17 core tests pass (eight new edit/shortcut tests); synthetic speech through the production capture-conversion/finalization pipeline retains the complete fixture including final words; independent release packaging and strict signing pass, and signed-process handshake/three valid snapshots/clean exit pass. Native host installation shows 0.2.0 Running, enabled on both displays, prior shortcut retained, and compact activity unchanged. The host retains the previous package for recovery. The corrected settings layout is visually checked and open; Accessibility permission is pending user approval. Live insertion, undo, clipboard restoration and focus-change behavior are not yet accepted.
+
+Package: `cafe.nero.plugin.voice-0.2.0-57fa3bbc0962.app`. Logs under ignored build/dictation-*.log. Human speech and browser/Electron compatibility remain separate acceptance gates. Updating the package invalidated the existing SDK assistant grant as designed; it has not been silently restored.
+
+---
+
 # Microphone capture correction — September 23, 2026
 
 Version 0.1.1 installed: `cafe.nero.plugin.voice-0.1.1-a3dc339e46f2.app`.

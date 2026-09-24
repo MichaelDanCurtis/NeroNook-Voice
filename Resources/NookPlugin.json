@@ -1,14 +1,16 @@
 {
   "id": "cafe.nero.plugin.voice",
   "name": "Nero Voice",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "apiVersion": 1,
-  "summary": "Local push-to-talk, editable dictation and optional spoken answers through your chosen module.",
+  "summary": "Dictate into your current app with local speech, a floating overlay and a separate reviewed assistant.",
   "capabilities": [
     "Records your chosen microphone only after Record or push-to-talk",
     "Transcribes locally with Apple Speech on supported Macs",
     "Copies reviewed text or sends it to a permitted text assistant",
-    "Optionally speaks replies using installed system voices"
+    "Optionally speaks replies using installed system voices",
+    "With macOS Accessibility, reads the focused non-password text field and inserts shortcut dictation there",
+    "Temporarily uses and restores the clipboard for insertion; never presses Send"
   ],
   "launchMode": "application",
   "icon": {

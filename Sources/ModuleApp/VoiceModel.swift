@@ -19,6 +19,12 @@ import NookPluginSDK
     @Published var locale = UserDefaults.standard.string(forKey: "locale") ?? "en-US" { didSet { UserDefaults.standard.set(locale, forKey: "locale") } }
     @Published var dictionary = UserDefaults.standard.string(forKey: "dictionary") ?? "" { didSet { UserDefaults.standard.set(String(dictionary.prefix(4096)), forKey: "dictionary") } }
     @Published var shortcut = UserDefaults.standard.string(forKey: "shortcut") ?? "Off" { didSet { UserDefaults.standard.set(shortcut, forKey: "shortcut"); configureHotkey() } }
+    @Published var shortcutStyle = DictationShortcutStyle(rawValue: UserDefaults.standard.string(forKey: "shortcutStyle") ?? "") ?? .hold { didSet { UserDefaults.standard.set(shortcutStyle.rawValue, forKey: "shortcutStyle"); shortcutState.reset() } }
+    @Published var dictateAtCursor = UserDefaults.standard.object(forKey: "dictateAtCursor") as? Bool ?? true { didSet { UserDefaults.standard.set(dictateAtCursor, forKey: "dictateAtCursor") } }
+    @Published var inserting = false
+    @Published var canUndoInsertion = false
+    @Published var targetName = "your app"
+    @Published var accessibilityAllowed = false
     @Published var sounds = UserDefaults.standard.bool(forKey: "sounds") { didSet { UserDefaults.standard.set(sounds, forKey: "sounds") } }
     @Published var voiceID = UserDefaults.standard.string(forKey: "voiceID") ?? "" { didSet { UserDefaults.standard.set(voiceID, forKey: "voiceID") } }
     @Published var selectedKey = UserDefaults.standard.string(forKey: "assistant") ?? "" {
@@ -48,13 +54,24 @@ import NookPluginSDK
     private var outgoing: UUID?
     private var outgoingEntry: PluginCatalogEntry?
     private var readReply = false
-    private var held = false
-    var busy: Bool { session.recording || waiting || preparingAssets }
+    private var shortcutState = DictationShortcutState()
+    private let insertion = DictationInsertion()
+    private let overlay = DictationOverlay()
+    private var target: DictationInsertion.Target?
+    private var insertionWork: Task<Void, Never>?
+    private var insertionGeneration = UUID()
+    private var overlayCompletion: Task<Void, Never>?
+    private var dictating = false
+    var busy: Bool { session.recording || waiting || preparingAssets || inserting }
     var assistant: PluginCatalogEntry? { catalog.first { $0.address.key == selectedKey && $0.action == pinnedAction && $0.action.map(VoiceContract.accepts) == true } }
     init() {
         objectWillChange.sink { [weak self] _ in Task { @MainActor in self?.changed?() } }.store(in: &observations)
-        hotkey.pressed = { [weak self] in guard let self, !self.busy else { return }; self.held = true; self.record(); self.reveal?() }
-        hotkey.released = { [weak self] in guard let self, self.held else { return }; self.held = false; self.stopRecording() }
+        hotkey.pressed = { [weak self] in self?.shortcutPressed() }
+        hotkey.released = { [weak self] in
+            guard let self else { return }
+            if self.shortcutState.release(style: self.shortcutStyle) == .stop { self.stopRecording() }
+        }
+        accessibilityAllowed = insertion.permitted
         if !CommandLine.arguments.contains("--protocol-test") {
             configureHotkey()
             Task { [weak self] in self?.languages = await SpeechTranscriber.supportedLocales.map { $0.identifier(.bcp47) }.sorted() }
@@ -63,6 +80,75 @@ import NookPluginSDK
             }
         }
     }
+    private func shortcutPressed() {
+        switch shortcutState.press(style: shortcutStyle, busy: busy) {
+        case .stop: stopRecording()
+        case .none: break
+        case .start:
+            guard !settings else { shortcutState.reset(); status = "Close Voice settings before dictating"; return }
+            overlayCompletion?.cancel()
+            if dictateAtCursor {
+                do {
+                    target = try insertion.capture(); targetName = target!.name; dictating = true
+                    beginRecording(); overlay.show(model: self)
+                } catch {
+                    shortcutState.reset(); status = error.localizedDescription
+                    overlay.show(model: self)
+                }
+            } else { record(); reveal?() }
+        }
+    }
+    private func finishDictation(into target: DictationInsertion.Target) {
+        self.target = nil; dictating = false; inserting = true; canUndoInsertion = false
+        status = "Inserting into \(target.name)…"
+        let text = session.transcript; let generation = UUID(); insertionGeneration = generation
+        insertionWork = Task { [self] in
+            defer { inserting = false }
+            do {
+                try await insertion.insert(text, into: target)
+                guard generation == insertionGeneration else { return }
+                canUndoInsertion = insertion.canUndo; status = "Inserted into \(target.name)"
+                overlayCompletion = Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(6)); guard !Task.isCancelled else { return }; self?.overlay.hide()
+                }
+            } catch {
+                guard generation == insertionGeneration else { return }
+                status = error.localizedDescription
+            }
+        }
+    }
+    /// Explicit recovery for a reviewed draft; five seconds to focus its destination.
+    func insertDraft() {
+        guard !busy, !session.transcript.isEmpty else { return }
+        guard insertion.permitted else { settings = true; status = "Allow text insertion, then return to your draft."; return }
+        inserting = true; overlayCompletion?.cancel(); overlay.show(model: self)
+        let generation = UUID(); insertionGeneration = generation
+        insertionWork = Task { [self] in
+            do {
+                for remaining in (1...5).reversed() {
+                    status = "Click the destination text field · inserting in \(remaining)…"
+                    try await Task.sleep(for: .seconds(1))
+                }
+                try Task.checkCancellation(); guard generation == insertionGeneration else { inserting = false; return }
+                let destination = try insertion.capture(); targetName = destination.name
+                inserting = false; finishDictation(into: destination)
+            } catch {
+                inserting = false
+                if generation == insertionGeneration { status = error.localizedDescription }
+            }
+        }
+    }
+    func undoInsertion() {
+        guard !busy else { return }; inserting = true; overlayCompletion?.cancel()
+        let generation = UUID(); insertionGeneration = generation
+        insertionWork = Task { [self] in
+            defer { inserting = false; canUndoInsertion = insertion.canUndo }
+            do { try await insertion.undoLast(); guard generation == insertionGeneration else { return }; status = "Dictation undone" }
+            catch { guard generation == insertionGeneration else { return }; status = error.localizedDescription }
+        }
+    }
+    func requestInsertionPermission() { insertion.requestPermission(); accessibilityAllowed = insertion.permitted }
+    func dismissOverlay() { if session.recording || inserting { cancel() }; overlayCompletion?.cancel(); overlay.hide() }
     func configureHotkey() { guard !CommandLine.arguments.contains("--protocol-test") else { return }; do { try hotkey.configure(shortcut) } catch { status = error.localizedDescription } }
     func refreshDevices() { microphones = MicrophoneDeviceService.inputDevices() }
     func prepareAssets() {
@@ -75,6 +161,9 @@ import NookPluginSDK
         }
     }
     func record() {
+        guard !busy else { return }; target = nil; dictating = false; beginRecording()
+    }
+    private func beginRecording() {
         guard !busy else { return }; stopSpeaking(); reply = ""; let token = session.begin(); revision = UUID(); status = "Preparing microphone…"
         deadline?.cancel(); deadline = Task { [weak self] in try? await Task.sleep(for: .seconds(30)); guard !Task.isCancelled, self?.session.token == token, self?.session.phase == .preparing else { return }; self?.cancel(); self?.status = "Microphone preparation timed out. Try Record again." }
         work = Task { [self] in
@@ -88,7 +177,7 @@ import NookPluginSDK
                     do { try self.session.partial(text, token: token) } catch { self.fail(error.localizedDescription, token: token) }
                 }, failure: { [weak self] text in self?.fail(text, token: token) })
                 try Task.checkCancellation(); guard session.ready(token) else { pipeline.cancel(); return }
-                status = "Listening · release shortcut or press Stop"
+                status = shortcutStyle == .hold ? "Listening · release shortcut or press Stop" : "Listening · press shortcut again to finish"
                 if sounds { NSSound(named: "Tink")?.play() }
                 deadline?.cancel(); deadline = Task { [weak self] in try? await Task.sleep(for: .seconds(60)); guard !Task.isCancelled, self?.session.token == token else { return }; self?.stopRecording() }
             } catch { if session.token == token { fail(error.localizedDescription, token: token) } }
@@ -105,13 +194,18 @@ import NookPluginSDK
                 let text = try await pipeline.finish()
                 try Task.checkCancellation(); guard session.token == token else { return }
                 try session.finish(text, token: token)
-                self.pipeline = nil; deadline?.cancel(); revision = UUID(); status = "Review your transcript · nothing sent"
+                self.pipeline = nil; deadline?.cancel(); revision = UUID(); shortcutState.reset()
+                status = "Review your transcript · nothing sent"
+                if dictating, let target { finishDictation(into: target) }
             } catch { if session.token == token { fail(error.localizedDescription, token: token) } }
         }
     }
     private func fail(_ message: String, token: UUID) { guard session.token == token else { return }; cancel(); status = message }
     func cancel() {
-        held = false; work?.cancel(); work = nil; deadline?.cancel(); deadline = nil
+        shortcutState.reset(); target = nil; dictating = false
+        insertionGeneration = UUID(); insertionWork?.cancel(); overlayCompletion?.cancel()
+        // An already sent paste cannot be recalled; retain busy until its clipboard lease ends.
+        work?.cancel(); work = nil; deadline?.cancel(); deadline = nil
         assetGeneration = UUID(); assetTask?.cancel(); assetTask = nil; preparingAssets = false
         pipeline?.cancel(); pipeline = nil; session.cancel(); revision = UUID()
         if let outgoing { cancelInvocation?(outgoing) }; outgoing = nil; outgoingEntry = nil; waiting = false
@@ -161,6 +255,7 @@ import NookPluginSDK
     }
     func stopSpeaking() { speaker.stopSpeaking(at: .immediate); speaking = false }
     func refreshSpeechState() {
+        accessibilityAllowed = insertion.permitted
         if session.phase == .listening, let signal = pipeline?.inputSignal {
             if signal.age > 3 { fail("The microphone stopped delivering audio. Choose a microphone in Voice settings and try again.", token: session.token); return }
             let device = microphones.first { microphone.isEmpty ? $0.isDefault : $0.id == microphone }?.name ?? "Microphone"
@@ -168,5 +263,5 @@ import NookPluginSDK
         }
         if speaking && !speaker.isSpeaking { speaking = false; status = "Reply ready" }
     }
-    func shutdown() { cancel(); hotkey.stop(); lifecycleObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) } }
+    func shutdown() { cancel(); insertion.shutdown(); overlay.hide(); hotkey.stop(); lifecycleObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) } }
 }

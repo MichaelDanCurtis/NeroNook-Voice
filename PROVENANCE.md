@@ -6,3 +6,9 @@ OmniVoice workspace: `/Volumes/Main External/Development/OmniVoice`, commit d3b5
 - `Sources/VoiceAudio/MicrophoneDeviceService.swift` from `Sources/OmniVoiceApp/MicrophoneDeviceService.swift` (SHA-256 `8c5d02b18307146d12bcf07cd5b765a5e23f65a5e294c6002ff3ec7c81c4bf7a`).
 
 SpeechPipeline and VoiceSession adapt the capture/volatile-final transcript/lifecycle design with rewritten bounded audio and cancellation ownership. Keyboard handling uses public Carbon hotkey registration. No OmniVoice account, license gate, server, model, credential, agent CLI or app binary is bundled. SDK source provenance is in SDK-SNAPSHOT.json. Public licensing/distribution remains a separate decision.
+
+## 0.2.0 dictation insertion
+
+Reviewed OmniVoice's `TextInsertionService.swift`, `TextInsertionEdit.swift` and `TextInsertionTargetPolicy.swift` at the same d3b5940 revision. DictationEdit adapts its UTF-16 replacement planning, with explicit surrogate-boundary and stale-selection checks. DictationInsertion adapts captured-target and transient-clipboard ideas; it deliberately does not carry over current-focus fallback, whole-field replacement, synthetic Unicode typing or unconditional undo. All code ships inside the independent Voice package; OmniVoice remains untouched.
+
+The floating overlay uses Apple's [nonactivating panel behavior](https://developer.apple.com/documentation/appkit/nspanel/becomeskeyonlyifneeded). Permission setup uses [AXIsProcessTrustedWithOptions](https://developer.apple.com/documentation/applicationservices/1459186-axisprocesstrustedwithoptions); permission is requested by the explicit settings button, never at launch.

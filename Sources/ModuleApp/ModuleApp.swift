@@ -80,7 +80,7 @@ import NookPluginSDK
         if model.session.recording {
             sections = [.init(model.session.phase == .listening ? "Listening on your Mac" : "Preparing / finishing", model.session.transcript.isEmpty ? "Your words appear here. Nothing is sent automatically." : String(model.session.transcript.prefix(1200)))]
         } else if !model.reply.isEmpty { sections = [.init("Reply", String(model.reply.prefix(1200)))] }
-        else { sections = [.init("Your words, your choice", "Record or hold your shortcut, then review the transcript. Copy stays local. Ask sends only reviewed text to your chosen assistant. Recordings are limited to 60 seconds and 2 KB of text.")] }
+        else { sections = [.init("Your words, your choice", "Use your shortcut in another app to dictate at its cursor. Record here to review first. Ask sends only text you choose to your assistant. Choose hold or toggle in Voice settings.")] }
         let form = PluginForm("transcript", title: "Review transcript", revision: model.revision.uuidString, action: VoiceContract.submit, inputs: [
             .init("text", label: "Your words", style: .text, value: .string(model.session.transcript)),
             .init("destination", label: "Use text", style: .choice, value: .string("Copy"), choices: model.assistant == nil ? ["Copy"] : ["Copy", "Ask"]),
@@ -113,12 +113,24 @@ struct VoiceView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack { Label("Nero Voice", systemImage: "waveform").font(.title2.bold()); Spacer(); Text(model.session.phase == .listening ? "● Recording" : "On-device speech").font(.caption).foregroundStyle(model.session.phase == .listening ? .red : .secondary); Button { model.settings = true; model.refreshDevices() } label: { Image(systemName: "gearshape") } }
+            HStack(spacing: 12) {
+                Image(systemName: "cursorarrow.and.square.on.square.dashed").font(.title2).foregroundStyle(.mint)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(model.dictateAtCursor ? "Dictate where you work" : "Record, then review").font(.headline)
+                    Text(model.shortcut == "Off" ? "Choose a shortcut in settings to dictate into another app." : "\(model.shortcut) · \(model.shortcutStyle.rawValue) · \(model.dictateAtCursor ? "insert at cursor" : "review in Nero Voice")").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if model.dictateAtCursor && !model.accessibilityAllowed {
+                    Button("Set up insertion") { model.settings = true }
+                }
+            }.padding(12).background(.mint.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
             Text(model.status).font(.callout).foregroundStyle(.secondary).lineLimit(2)
             TextEditor(text: Binding(get: { model.session.transcript }, set: model.edit)).font(.body).scrollContentBackground(.hidden).padding(10).background(.black.opacity(0.15), in: RoundedRectangle(cornerRadius: 12)).disabled(model.busy)
             if !model.reply.isEmpty { ScrollView { Text(model.reply).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 90) }
             HStack {
                 Button(model.session.recording ? "Stop recording" : "Record", systemImage: model.session.recording ? "stop.fill" : "mic.fill") { if model.session.recording { model.stopRecording() } else { model.record() } }.disabled(model.waiting || model.preparingAssets || model.session.phase == .finishing)
                 Button("Cancel") { model.cancel() }.disabled(!model.busy && !model.speaking)
+                Button("Insert draft…") { model.insertDraft() }.disabled(model.busy || model.session.transcript.isEmpty).help("Five seconds to click the destination text field")
                 Spacer()
                 Picker("Use text", selection: $destination) { Text("Copy").tag("Copy"); if model.assistant != nil { Text("Ask").tag("Ask") } }.labelsHidden().frame(width: 100)
                 Toggle("Read reply", isOn: $read).toggleStyle(.checkbox)
@@ -127,7 +139,7 @@ struct VoiceView: View {
                 }.disabled(model.busy || model.session.transcript.isEmpty)
             }
             HStack { Button("Original words") { model.restore() }.disabled(model.busy || model.session.raw.isEmpty); Button("Apply spellings") { model.applyDictionary() }.disabled(model.busy || model.dictionary.isEmpty); Spacer(); Button(model.speaking ? "Stop speaking" : "Read reply") { if model.speaking { model.stopSpeaking() } else { model.speak() } }.disabled(model.busy || model.reply.isEmpty) }.font(.caption)
-        }.padding(20).frame(width: 720, height: 405).preferredColorScheme(.dark).tint(.mint)
+        }.padding(20).frame(width: 720, height: 480).preferredColorScheme(.dark).tint(.mint)
             .onExitCommand { model.cancel() }
             .sheet(isPresented: $model.settings) { VoiceSettings(model: model) }
     }
@@ -137,12 +149,21 @@ struct VoiceSettings: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack { Text("Voice settings").font(.title2.bold()); Spacer(); Button("Done") { model.settings = false } }
-            Form {
+            ScrollView { VStack(alignment: .leading, spacing: 14) {
                 Picker("Microphone", selection: $model.microphone) { Text("System default").tag(""); ForEach(model.microphones) { Text($0.displayName).tag($0.id) } }
                 Picker("Language", selection: $model.locale) { ForEach(Array(Set(model.languages + [model.locale])).sorted(), id: \.self) { Text(Locale.current.localizedString(forIdentifier: $0) ?? $0).tag($0) } }
                 HStack { Text("Apple Speech · on this Mac"); Spacer(); Button("Prepare language") { model.prepareAssets() }.disabled(model.busy) }
                 Text("Language assets are managed by macOS. Prepare may download the selected language; audio is transcribed locally.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Picker("Push to talk", selection: $model.shortcut) { ForEach(PushToTalk.choices, id: \.self) { Text($0).tag($0) } }
+                Picker("Shortcut", selection: $model.shortcut) { ForEach(PushToTalk.choices, id: \.self) { Text($0).tag($0) } }
+                Picker("Shortcut behavior", selection: $model.shortcutStyle) { ForEach(DictationShortcutStyle.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
+                Toggle("Insert shortcut dictation at the original cursor", isOn: $model.dictateAtCursor)
+                Text("Record in this window always keeps a draft for review. Shortcut dictation pastes locally after you finish; it never presses Send. If the destination changes, your words stay here.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Label(model.accessibilityAllowed ? "Text insertion allowed" : "Accessibility needed for insertion", systemImage: model.accessibilityAllowed ? "checkmark.circle" : "cursorarrow")
+                    Spacer()
+                    Button("Allow text insertion…") { model.requestInsertionPermission() }
+                }
+                Text("macOS Accessibility lets Nero Voice check the focused text field and paste your dictation. Audio and field context stay on this Mac.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Toggle("Recording cue", isOn: $model.sounds)
                 Picker("Text assistant", selection: $model.selectedKey) {
                     Text("None · dictation only").tag("")
@@ -154,10 +175,10 @@ struct VoiceSettings: View {
                 Text("Personal spellings · one per line")
                 TextEditor(text: $model.dictionary).frame(height: 64)
                 Text("Use Apply spellings to preview canonical capitalization. Original words remain available.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }.disabled(model.busy)
+            }.frame(maxWidth: .infinity, alignment: .leading).disabled(model.busy) }.frame(height: 490)
             Text(model.status).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if model.preparingAssets { Button("Cancel preparation") { model.cancel() } }
-        }.padding(24).frame(width: 570).preferredColorScheme(.dark)
+        }.padding(24).frame(width: 640, height: 620).fixedSize().preferredColorScheme(.dark)
     }
 }
 @main struct NeroVoiceApp: App {
