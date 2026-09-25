@@ -1,5 +1,7 @@
 # Nero Voice
 
+**Planned expansion:** the owner requested meeting recording and speaker diarization alongside the dictation product. [Meeting scope and OmniVoice assessment](docs/MEETINGS.md) cover source selection, durable audio/playback, speaker correction, local providers and optional Agent summaries. The installed 0.2.1 behavior below remains microphone-only short dictation; meetings are not implemented yet.
+
 Independent NeroNook voice module for macOS 26 or newer. It adapts the owner's OmniVoice native speech and microphone components; OmniVoice does not need to be installed. NeroNook also continues to work without this module.
 
 ## Dictation into other apps (0.2.1)
