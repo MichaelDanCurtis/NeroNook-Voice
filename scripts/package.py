@@ -2,11 +2,13 @@
 """Package Nero Voice with its own macOS microphone privacy identity."""
 import argparse, hashlib, json, os, plistlib, shutil, subprocess, tempfile
 from pathlib import Path
+from signing import resolve, sign, verify_update
 ROOT = Path(__file__).resolve().parents[1]
 def run(args, **kw):
     return subprocess.run([str(x) for x in args], cwd=ROOT, check=True, **kw)
 def main():
-    parser = argparse.ArgumentParser(); parser.add_argument('--identity', default='-'); args = parser.parse_args()
+    parser = argparse.ArgumentParser(); parser.add_argument('--identity'); args = parser.parse_args()
+    identity, reference = resolve(json.loads((ROOT/'Resources/NookPlugin.json').read_text())['id'], args.identity)
     run(['swift', 'build', '-c', 'release'])
     binaries = Path(run(['swift', 'build', '-c', 'release', '--show-bin-path'], capture_output=True, text=True).stdout.strip())
     worker = ROOT/'Workers/Diarization'
@@ -25,8 +27,8 @@ def main():
         shutil.copy2(worker_bin/'NeroDiarization', helpers/'NeroDiarization')
         shutil.copy2(worker_bin/'mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib', helpers/'mlx.metallib')
         for resource in worker_bin.glob('*.bundle'): shutil.copytree(resource, app/'Contents/Resources'/resource.name)
-        run(['codesign', '--force', '--sign', args.identity, helpers/'mlx.metallib'])
-        run(['codesign', '--force', '--sign', args.identity, '--options', 'runtime', helpers/'NeroDiarization'])
+        sign(helpers/'mlx.metallib', identity)
+        sign(helpers/'NeroDiarization', identity, '--options', 'runtime')
         info = dict(CFBundleName='Nero Voice', CFBundleDisplayName='Nero Voice', CFBundleIdentifier=value['id'],
                     CFBundleExecutable='ModuleApp', CFBundlePackageType='APPL', CFBundleShortVersionString=value['version'],
                     CFBundleVersion='1', LSMinimumSystemVersion='26.0', NSHighResolutionCapable=True,
@@ -35,7 +37,8 @@ def main():
                     NSSpeechRecognitionUsageDescription='Nero Voice turns speech into an editable transcript using on-device Apple Speech.')
         (app/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
         entitlements = Path(temp)/'audio.plist'; entitlements.write_bytes(plistlib.dumps({'com.apple.security.device.audio-input': True}))
-        run(['codesign', '--force', '--sign', args.identity, '--options', 'runtime', '--entitlements', entitlements, app])
+        sign(app, identity, '--options', 'runtime', '--entitlements', entitlements)
+        verify_update(app, reference)
         run(['codesign', '--verify', '--deep', '--strict', app], capture_output=True)
         digest = hashlib.sha256()
         for p in sorted(app.rglob('*')):

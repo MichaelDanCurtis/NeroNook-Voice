@@ -67,3 +67,9 @@ swift run SpeechCheck /tmp/nero-voice-fixture.aiff --capture-pipeline
 ```
 
 The second run simulates real-time tap buffers through the production converter, bounded queue and finalization path. It does not prove physical microphone, OS permission, device unplug or human dictation quality. See `docs/ACCEPTANCE.md` for observed results. No automatic command execution, advanced dictation cleanup or conversational ChatGPT audio is claimed. Meetings adds a native MLX diarization helper; selected modern providers are tracked separately in docs/MODELS.md.
+
+## Stable local updates
+
+The package script accepts `--identity`, `NERONOOK_SIGNING_IDENTITY`, or the current installed Voice certificate. It rejects missing/ad hoc identities and verifies that the signed update keeps the bundle identity and satisfies the prior package's designated requirement. Signing timeout/failure ends that attempt without retries or temporary-signature fallback. The vendored `scripts/signing.py` helper does not inspect credential values or change Keychain protection.
+
+September 25 packaging-only maintenance: the shared signing tests passed and the real Voice release build signed successfully as `build/cafe.nero.plugin.voice-0.3.0-a1747826a9bd.app`, including its diarization helper, with compatibility against the installed package. No password prompt occurred. Voice audio code and the installed Voice 0.3.0 package were not changed or reinstalled. No new audio/model acceptance is claimed here.
