@@ -1,6 +1,8 @@
 # Nero Voice
 
-**Planned expansion:** the owner requested meeting recording and speaker diarization alongside the dictation product. [Meeting scope and OmniVoice assessment](docs/MEETINGS.md) cover source selection, durable audio/playback, speaker correction, local providers and optional Agent summaries. The installed 0.2.1 behavior below remains microphone-only short dictation; meetings are not implemented yet.
+**Meetings preview (0.3.0):** record a microphone, an exact app audio-process group, or all system audio; pause/resume, bookmark, play and seek saved audio; transcribe locally after recording; optionally prepare the local Sortformer speaker model; correct text and speaker labels; export Markdown. Recording and review work inside the Nook and in Voice's larger window. No separate application or Python installation is required.
+
+The owner has requested newer selectable models. [Model direction](docs/MODELS.md) records Nemotron 3 Diarization, Parakeet/Canary ASR and Kokoro TTS as the next integration, not as already installed providers.
 
 Independent NeroNook voice module for macOS 26 or newer. It adapts the owner's OmniVoice native speech and microphone components; OmniVoice does not need to be installed. NeroNook also continues to work without this module.
 
@@ -22,7 +24,17 @@ Install the signed `.app` through NeroNook Settings → Modules → Install or U
 
 The dictation shortcut is configurable: Off, Control–Option–V, Control–Option–Space or Control–Shift–V. Hold until the **Listening** indicator appears, speak, then release. Releasing during preparation cancels; it never starts a delayed recording. Record/Stop buttons are available without a shortcut. Close settings to use the shortcut. Personal spellings apply literal whole-term capitalization only, after an explicit button press; Original words restores the unedited recognized text.
 
-Recordings stop at 60 seconds or 2 KB of recognized text. Capture is microphone-only and starts from Record or the registered shortcut; no wake word, ambient capture, system audio or auto-send. Shortcut dictation can paste locally when insertion is enabled; recording in the Voice window keeps text for review. Transcript and reply remain in memory and clear on process exit. User-requested Copy changes the clipboard; submitted form text is displayed transiently by the host. Device/language/shortcut/spelling/provider preferences are saved in the plugin's own defaults domain. Raw audio is not saved, sent to an assistant or included in protocol messages.
+**Dictation** stops at 60 seconds or 2 KB of recognized text. Dictation capture is microphone-only and starts from Record or the registered shortcut; no wake word, ambient capture or auto-send. Meetings provides separate explicit system-audio recording. Shortcut dictation can paste locally when insertion is enabled; recording in the Voice window keeps text for review. Transcript and reply remain in memory and clear on process exit. User-requested Copy changes the clipboard; submitted form text is displayed transiently by the host. Device/language/shortcut/spelling/provider preferences are saved in the plugin's own defaults domain. Dictation raw audio is not saved, sent to an assistant or included in protocol messages.
+
+## Meetings
+
+Select **Meetings**, name the session, choose microphone/call audio and press **Start recording**. App choices refer to the exact audio-process bundle shown; some apps expose separate helper groups. Use the explicitly labelled all-system source when appropriate. A missing source stops with an error. Source meters reflect the saved audio. Pause compresses the pause interval out of the recording timeline; bookmarks and both tracks use that same clock.
+
+Stop saves 16 kHz mono CAF chunks per track in `~/Library/Application Support/NeroVoice/Meetings/<UUID>/`. Audio is saved continuously, in roughly 15-second pieces, with recovery for unindexed tails. Limit: four hours, stopping when available disk space drops below 100 MB. Playback mixes the tracks and supports seeking. A headset avoids recording remote speech twice through speaker echo; automatic echo deduplication is not yet implemented.
+
+**Transcribe** runs Apple Speech on saved tracks, with the selected Voice language. Prepare language through Voice settings when needed. It is a post-recording pass, not live captions. **Prepare speakers** optionally downloads a pinned, hash-verified 236 MB model; **Identify speakers** applies local Sortformer analysis. Up to four generic speakers per track; labels are estimates and uncertain/overlapping phrases remain unassigned. Click a timestamp to play; Edit corrects text/assignment, and speaker-name fields rename labels. Original recognized text and audio remain intact. Partial transcript checkpoints survive cancellation; Continue retries an incomplete track. Speaker continuity and accuracy beyond the short fixture require broader evaluation.
+
+The title-searchable library is paginated. Show audio files exposes the recording and transcript JSON; Export transcript writes timestamped Markdown. Move to Trash uses normal recoverable macOS Trash. Nothing is automatically sent to Agent. Live captions, model selection, long-meeting/echo benchmarks, caption export and evidence-linked Agent summaries remain subsequent work.
 
 ## Architecture and safeguards
 
@@ -54,4 +66,4 @@ swift run SpeechCheck /tmp/nero-voice-fixture.aiff
 swift run SpeechCheck /tmp/nero-voice-fixture.aiff --capture-pipeline
 ```
 
-The second run simulates real-time tap buffers through the production converter, bounded queue and finalization path. It does not prove physical microphone, OS permission, device unplug or human dictation quality. See `docs/ACCEPTANCE.md` for observed results. No automatic command execution, local MLX provider, advanced cleanup or conversational ChatGPT audio is claimed in this slice.
+The second run simulates real-time tap buffers through the production converter, bounded queue and finalization path. It does not prove physical microphone, OS permission, device unplug or human dictation quality. See `docs/ACCEPTANCE.md` for observed results. No automatic command execution, advanced dictation cleanup or conversational ChatGPT audio is claimed. Meetings adds a native MLX diarization helper; selected modern providers are tracked separately in docs/MODELS.md.

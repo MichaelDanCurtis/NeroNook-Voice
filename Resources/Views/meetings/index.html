@@ -1,0 +1,17 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="meeting.css"></head><body>
+<main>
+ <aside><header><span class="eyebrow">NERO VOICE</span><button id="new" title="New meeting">＋</button></header><h2>Meetings</h2><input id="search" placeholder="Search recordings" aria-label="Search recordings"><nav id="library"></nav><div class="libraryPages"><button id="libraryPrevious" aria-label="Previous recordings">←</button><span id="libraryPage"></span><button id="libraryNext" aria-label="More recordings">→</button></div><footer>Saved on this Mac</footer></aside>
+ <section><header class="top"><span id="badge">RECORDING LIBRARY</span><button id="refresh">Refresh sources</button></header>
+ <div id="create"><h1>Keep the conversation.</h1><p class="muted">Record your microphone, call audio, or both.</p><input id="name" maxlength="120" placeholder="Meeting name" aria-label="Meeting name">
+ <div class="sources"><label class="source"><span class="sourceIcon">◉</span><span>Microphone<small>Your selected Voice microphone</small></span><input id="mic" type="checkbox" checked></label>
+ <label class="source"><span class="sourceIcon">▣</span><span>Call audio<small id="sourceHint">Choose an app or system audio</small></span></label><select id="source" aria-label="Call audio source"><option value="none">Microphone only</option><option value="all">All system audio</option></select></div>
+ <button id="record" class="primary">● Start recording</button><p class="fine">Audio is saved locally. Start and stop recording here.</p></div>
+ <div id="detail" hidden><input id="title" maxlength="120" aria-label="Recording title"><div class="clock" id="clock">00:00</div>
+ <div class="meters"><label>Microphone <meter id="micMeter" min="0" max="1" value="0"></meter></label><label>Call audio <meter id="systemMeter" min="0" max="1" value="0"></meter></label></div>
+ <div class="transport"><button id="pause">Pause</button><button id="resume">Resume</button><button id="stop" class="stop">■ Stop & save</button><button id="bookmark">⚑ Bookmark</button><button id="play" class="primary">▶ Play recording</button></div>
+ <div id="playback"><input id="seek" type="range" min="0" max="1" step="0.1" value="0" aria-label="Playback position"><div class="times"><span id="position">00:00</span><span id="total">00:00</span></div></div>
+ <div id="marks"></div>
+ <div id="analysis"><div class="analysisControls"><button id="transcribe">Transcribe</button><button id="prepareSpeakers">Prepare speakers · 236 MB</button><button id="identify">Identify speakers</button><button id="cancelProcess">Stop processing</button></div><progress id="progress" max="1" value="0" hidden></progress><p class="fine" id="speakerHint">Local analysis · up to 4 speakers per track. Names are yours to assign.</p><div id="speakers"></div><div id="transcript"></div><div id="pages" hidden><button id="previousPage">←</button><span id="pageLabel"></span><button id="nextPage">→</button></div></div><div class="bottom"><button id="export">Export transcript</button><button id="files">Show audio files</button><button id="delete">Move to Trash</button></div><p id="issue" class="notice" hidden></p></div>
+ <div id="status" role="status"></div><div id="error" class="notice" hidden></div>
+ </section>
+</main><script src="meeting.js"></script></body></html>

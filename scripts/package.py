@@ -9,6 +9,9 @@ def main():
     parser = argparse.ArgumentParser(); parser.add_argument('--identity', default='-'); args = parser.parse_args()
     run(['swift', 'build', '-c', 'release'])
     binaries = Path(run(['swift', 'build', '-c', 'release', '--show-bin-path'], capture_output=True, text=True).stdout.strip())
+    worker = ROOT/'Workers/Diarization'
+    subprocess.run(['swift', 'build', '-c', 'release'], cwd=worker, check=True)
+    worker_bin = Path(subprocess.check_output(['swift', 'build', '-c', 'release', '--show-bin-path'], cwd=worker, text=True).strip())
     manifest = (ROOT/'Resources/NookPlugin.json').read_bytes(); value = json.loads(manifest)
     run([binaries/'PluginCheck', '--manifest'], input=manifest, capture_output=True)
     output = ROOT/'build'; output.mkdir(exist_ok=True)
@@ -16,14 +19,23 @@ def main():
         app = Path(temp)/'Nero Voice.app'; (app/'Contents/MacOS').mkdir(parents=True); (app/'Contents/Resources').mkdir()
         shutil.copy2(binaries/'ModuleApp', app/'Contents/MacOS/ModuleApp')
         (app/'Contents/Resources/NookPlugin.json').write_bytes(manifest)
+        shutil.copytree(ROOT/'Resources/Views', app/'Contents/Resources/Views')
+        shutil.copytree(ROOT/'Resources/Licenses', app/'Contents/Resources/Licenses')
+        helpers = app/'Contents/Helpers'; helpers.mkdir()
+        shutil.copy2(worker_bin/'NeroDiarization', helpers/'NeroDiarization')
+        shutil.copy2(worker_bin/'mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib', helpers/'mlx.metallib')
+        for resource in worker_bin.glob('*.bundle'): shutil.copytree(resource, app/'Contents/Resources'/resource.name)
+        run(['codesign', '--force', '--sign', args.identity, helpers/'mlx.metallib'])
+        run(['codesign', '--force', '--sign', args.identity, '--options', 'runtime', helpers/'NeroDiarization'])
         info = dict(CFBundleName='Nero Voice', CFBundleDisplayName='Nero Voice', CFBundleIdentifier=value['id'],
                     CFBundleExecutable='ModuleApp', CFBundlePackageType='APPL', CFBundleShortVersionString=value['version'],
                     CFBundleVersion='1', LSMinimumSystemVersion='26.0', NSHighResolutionCapable=True,
-                    NSMicrophoneUsageDescription='Nero Voice records your selected microphone when you press Record or hold your shortcut. Speech is transcribed on this Mac.',
+                    NSMicrophoneUsageDescription='Nero Voice records your selected microphone when you start dictation or a meeting. Meeting audio is saved on this Mac.',
+                    NSAudioCaptureUsageDescription='Record your selected call audio or system audio when you start a meeting. Audio is saved on this Mac.',
                     NSSpeechRecognitionUsageDescription='Nero Voice turns speech into an editable transcript using on-device Apple Speech.')
         (app/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
         entitlements = Path(temp)/'audio.plist'; entitlements.write_bytes(plistlib.dumps({'com.apple.security.device.audio-input': True}))
-        run(['codesign', '--force', '--sign', args.identity, '--options', 'runtime', '--entitlements', entitlements, app], capture_output=True)
+        run(['codesign', '--force', '--sign', args.identity, '--options', 'runtime', '--entitlements', entitlements, app])
         run(['codesign', '--verify', '--deep', '--strict', app], capture_output=True)
         digest = hashlib.sha256()
         for p in sorted(app.rglob('*')):

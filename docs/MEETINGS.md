@@ -1,5 +1,7 @@
 # Nero Voice: dictation and meetings
 
+**Implementation update:** the 0.3.0 recording and post-recording review preview is now implemented. See README.md and ACCEPTANCE.md for current behavior and actual evidence; the discussion below retains the broader desired scope. New provider direction is in MODELS.md.
+
 September 24, 2026. Product discussion and source assessment, following the owner's request for meeting recording and diarization. This extends Voice's planned scope; it does not replace the ongoing continuous-Agent work or claim an installed meeting feature.
 
 ## Product shape

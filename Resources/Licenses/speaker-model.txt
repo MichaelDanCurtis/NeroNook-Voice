@@ -1,0 +1,7 @@
+Nero Voice's optional speaker model is downloaded separately after Prepare speakers.
+Model: mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16
+Revision: e23e6404bd9859e93edbf94a740eb1c7fc58f12e
+https://huggingface.co/mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16
+Derived from NVIDIA diar_streaming_sortformer_4spk-v2.1, governed by the NVIDIA Open Model License:
+https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/
+Maximum four speakers per audio track. Labels are estimates, not verified identities.

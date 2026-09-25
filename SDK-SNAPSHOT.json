@@ -1,15 +1,24 @@
 {
-  "hostBaseline": "0.15.0",
+  "hostBaseline": "0.26.1",
   "apiVersion": 1,
   "files": {
     "Package.swift": "c1c4492f6d2be4e0b616ca0d707c0e153fbe5641b9ffa9857916222b94d1e694",
+    "Sources/NookPluginSDK/PluginPresentation.swift": "0fcc7a73c1393050d71a136d230500d65a535be48a11d026b507c564cebb383f",
+    "Sources/NookPluginSDK/PluginVolume.swift": "d0010f18b047d510f8a6668780d9cfe2c69c946c23a4f2142299e066eced6cfd",
     "Sources/NookPluginSDK/PluginApplicationChannel.swift": "7191e1cae30b6be4ea05b2e79a88cd4ba6cb71b1cf2cd1d5001f20a0eeaf4006",
     "Sources/NookPluginSDK/PluginDiagram.swift": "bd2ca23c94eb0939f84abfd2e7398c68257631e282af5491e458dffd1cd1a42f",
+    "Sources/NookPluginSDK/PluginCollectionView.swift": "75687c56d3082892471c8347ebaae6e4981402bed116ad7e2fc97df16310bdeb",
     "Sources/NookPluginSDK/PluginActions.swift": "c2024e9751df97eb3d4cc34392ddd4362e2cd5882480d40d43d990986953494e",
+    "Sources/NookPluginSDK/PluginWindows.swift": "d62e1522f026ed0ad083fab83a33e7647bffd3bde1c40f3c56d17be50cf982da",
     "Sources/NookPluginSDK/ModulePackage.swift": "10eb0afad8eb1e2681e0dc708f8e3c3f271d6c5bf5ac80dddc5b4a151be99323",
-    "Sources/NookPluginSDK/PluginProtocol.swift": "fed638e18bd19e419f08a47f128e155a9ad6896ca274c85ef75c9aa30c0ce852",
+    "Sources/NookPluginSDK/PluginProtocol.swift": "894786f6ecee633ec05e0bfedd52b481783a6d85cca5ca564b83c0e27425c81c",
+    "Sources/NookPluginSDK/PluginIcon.swift": "8971cf48f7c0a9d3180d4460855698ff05b10448ebc143f21cf0194e3764ada8",
+    "Sources/NookPluginSDK/PluginViewResource.swift": "1996c42635520c2d9b0a7989c0f443af555f152f9a967f10fba4f62e9d61272d",
+    "Sources/NookPluginSDK/PluginWebSurface.swift": "41e4a6bad23bb6c5fd61db9937b8bac448f105b2ffb15b0d2ba1c1e66c923314",
     "Sources/NookPluginSDK/PluginAgenda.swift": "98812ab547e75a66705dff7729229b595d3d26d0dbdf035d8bc598a57e4e2b18",
     "Sources/NookPluginSDK/PluginStorage.swift": "cdb4596dc8c6de0b932497d61098e90a5d953f7ab8078d2e93cfe67e19d91b1b",
+    "Sources/NookPluginSDK/PluginCollection.swift": "adac753c6a4a6d84f55511325caebf462d85865d7d6a07293ab26435f9a8ae2a",
+    "Sources/NookPluginSDK/PluginCustomView.swift": "6a21aaffd472c4e99fc11dc3bf454c41a27d49f9699e2b8dce8e684609d31f51",
     "Sources/NookPluginSDK/PluginForm.swift": "b2325c59245d08fb444d52a09d88d8542ccd580cff6569df7727e49ff29e4da5"
   }
 }

@@ -1,3 +1,26 @@
+# Meetings preview 0.3.0 — September 24, 2026
+
+Installed independent signed package `cafe.nero.plugin.voice-0.3.0-d4774275989a.app` through the normal NeroNook module update. Host shows 0.3.0 Running; existing display placement and settings remain. No host code or OmniVoice files changed in this slice.
+
+Verified:
+- 17 existing tests and six new meeting tests pass. New coverage includes SDK view revision validation, stereo resampling and converter-tail preservation, separate track rotation and pause/recovery, metadata validation, rejection of late audio, and conservative speaker assignment with persistent corrections.
+- Signed release packaging, deep strict signature validation, and the signed-process handshake/SDK validation/three snapshots/clean EOF check pass.
+- Real microphone recording, bookmark, pause, resume, stop, saved library entry and playback work in the installed UI. The short check produced approximately 15 seconds of saved audio; no recording remains active.
+- Real system-audio capture saved four CAF chunks over approximately 52 seconds. A locally generated test phrase played through the system was present in the waveform and correctly transcribed through the installed UI, with timestamps around 37 and 39 seconds.
+- A transcript correction through the installed editor saved separately from the original recognized text. The original text is retained on disk. Test transcript text is synthetic.
+- Native Meetings layout and compact host controls were inspected. The public MLX Audio multi-speaker test fixture imported as a clearly labelled demo produced 12 timestamped Apple Speech phrases in the installed UI. This is a fixture, not a recorded meeting.
+- The separately packaged native Sortformer worker processed the 30-second public fixture and returned two generic speaker IDs. Model download hashes and packaged helper execution were checked independently; the optional model preparation/diarization flow has not been exercised end to end through the installed UI.
+
+Acceptance caught and fixed an invalid selected-meeting SDK revision: UUID hyphens violated the SDK key format, causing silent snapshot loss and host timeout. Revisions are now normalized and covered by a regression test; a valid fallback snapshot exposes Stop activity if future view validation fails. The replacement package remains connected during the subsequent live checks.
+
+Boundaries: this is post-recording transcription, not live captions or finalized continuous diarization. Long-meeting endurance, five-to-eight-speaker accuracy, overlapping speech quality, echo handling, exact application/helper capture isolation, unplug/sleep behavior and export UI remain separate acceptance work. General Dictate footer controls still appear below Meetings in the host surface. Short live checks and fixture outputs are not an accuracy benchmark.
+
+The owner's newer-model direction is documented in [MODELS.md](MODELS.md): Nemotron 3 Diarization, Parakeet v3, Canary and Kokoro. None is installed, selectable or benchmarked by this release. Current providers remain Apple Speech, optional four-speaker Sortformer and macOS speech output.
+
+Evidence is local and ignored by Git: `build/meetings-tests.log`, `build/meetings-protocol.log`, `build/meeting-speech-test.log`, `build/packaged-speakers.json` and the clearly labelled test library entries. No meeting audio is committed or sent to an assistant.
+
+---
+
 # Focus correction and owner acceptance 0.2.1 — September 23, 2026
 
 macOS Accessibility is now granted by the owner and the installed plugin reports Text insertion allowed. Focus capture and revalidation now use the system-wide accessibility focused element, matching OmniVoice's approach, instead of first choosing NSWorkspace's frontmost application. The captured field, text and cursor checks remain in place.

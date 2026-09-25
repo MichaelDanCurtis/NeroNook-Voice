@@ -41,6 +41,7 @@ import NookPluginSDK
     var invoke: ((UUID, PluginActionAddress, [String: PluginValue]) -> Void)?
     var cancelInvocation: ((UUID) -> Void)?
     var reveal: (() -> Void)?
+    var meetingActive: (() -> Bool)?
     private var pinnedAction: PluginRegisteredAction? = UserDefaults.standard.data(forKey: "assistantDefinition").flatMap { try? JSONDecoder().decode(PluginRegisteredAction.self, from: $0) }
     private var pipeline: SpeechPipeline?
     private var work: Task<Void, Never>?
@@ -62,7 +63,7 @@ import NookPluginSDK
     private var insertionGeneration = UUID()
     private var overlayCompletion: Task<Void, Never>?
     private var dictating = false
-    var busy: Bool { session.recording || waiting || preparingAssets || inserting }
+    var busy: Bool { session.recording || waiting || preparingAssets || inserting || meetingActive?() == true }
     var assistant: PluginCatalogEntry? { catalog.first { $0.address.key == selectedKey && $0.action == pinnedAction && $0.action.map(VoiceContract.accepts) == true } }
     init() {
         objectWillChange.sink { [weak self] _ in Task { @MainActor in self?.changed?() } }.store(in: &observations)

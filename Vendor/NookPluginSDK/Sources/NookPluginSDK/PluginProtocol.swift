@@ -8,7 +8,9 @@ public struct PluginManifest: Codable, Equatable, Sendable, Identifiable {
     public var summary: String
     public var capabilities: [String]
     public var launchMode: String? = nil
+    public var icon: PluginIcon? = nil
     public func validate() throws {
+        try icon?.validate()
         guard launchMode == nil || launchMode == "application" else { throw ModuleProblem("Unsupported plugin launch mode.") }
         guard apiVersion == 1 else { throw ModuleProblem("This plugin requires a different plugin interface version.") }
         guard id.range(of: #"^[a-z][a-z0-9]*(\.[a-z][a-z0-9-]*)+$"#, options: .regularExpression) != nil,
@@ -63,8 +65,10 @@ public struct PluginPanel: Codable, Equatable, Sendable, Identifiable {
     public var diagrams: [PluginDiagram]?
     public var cards: [PluginControlCard]?
     public var forms: [PluginForm]?
-    public init(_ id: String, _ title: String, usesMedia: Bool = false, sections: [PluginSection] = [], diagrams: [PluginDiagram]? = nil, cards: [PluginControlCard]? = nil, forms: [PluginForm]? = nil) {
-        self.id = id; self.title = title; self.usesMedia = usesMedia; self.sections = sections; self.diagrams = diagrams; self.cards = cards; self.forms = forms
+    public var collection: PluginCollection?
+    public var customView: PluginCustomView?
+    public init(_ id: String, _ title: String, usesMedia: Bool = false, sections: [PluginSection] = [], diagrams: [PluginDiagram]? = nil, cards: [PluginControlCard]? = nil, forms: [PluginForm]? = nil, collection: PluginCollection? = nil, customView: PluginCustomView? = nil) {
+        self.id = id; self.title = title; self.usesMedia = usesMedia; self.sections = sections; self.diagrams = diagrams; self.cards = cards; self.forms = forms; self.collection = collection; self.customView = customView
     }
 }
 public struct PluginMedia: Codable, Equatable, Sendable {
@@ -89,13 +93,18 @@ public struct PluginSnapshot: Codable, Equatable, Sendable {
     public var badge: String?
     public var panels: [PluginPanel]?
     public var iconPNG: Data?
-    public init(title: String, status: String, activity: String = "", progress: Double? = nil, fields: [PluginField] = [], actions: [PluginAction] = [], metrics: [PluginField]? = nil, sections: [PluginSection]? = nil, media: PluginMedia? = nil, badge: String? = nil, panels: [PluginPanel]? = nil, iconPNG: Data? = nil) {
+    public var volumeEndpoints: [PluginVolumeEndpoint]?
+    public init(title: String, status: String, activity: String = "", progress: Double? = nil, fields: [PluginField] = [], actions: [PluginAction] = [], metrics: [PluginField]? = nil, sections: [PluginSection]? = nil, media: PluginMedia? = nil, badge: String? = nil, panels: [PluginPanel]? = nil, iconPNG: Data? = nil, volumeEndpoints: [PluginVolumeEndpoint]? = nil) {
         self.title = title; self.status = status; self.activity = activity; self.progress = progress; self.fields = fields; self.actions = actions
-        self.metrics = metrics; self.sections = sections; self.media = media; self.badge = badge; self.panels = panels; self.iconPNG = iconPNG
+        self.metrics = metrics; self.sections = sections; self.media = media; self.badge = badge; self.panels = panels; self.iconPNG = iconPNG; self.volumeEndpoints = volumeEndpoints
     }
-    public var displayActions: [PluginAction] { actions + (panels ?? []).flatMap { ($0.cards ?? []).flatMap(\.actions) } }
+    public var displayActions: [PluginAction] { actions + (panels ?? []).flatMap { ($0.cards ?? []).flatMap(\.actions) + ($0.collection?.displayActions ?? []) } }
     public func enabledDisplayAction(_ id: String) -> PluginAction? { displayActions.first { $0.id == id && $0.enabled } }
     public func validate() throws {
+        if let endpoints = volumeEndpoints {
+            guard endpoints.count <= 8, Set(endpoints.map(\.id)).count == endpoints.count else { throw ModuleProblem("Invalid volume endpoint list.") }
+            for endpoint in endpoints { try endpoint.validate() }
+        }
         var known: [String: PluginAction] = [:]
         for action in displayActions {
             guard ModulePackage.validKey(action.id), !action.label.isEmpty, action.label.count <= 80,
@@ -105,7 +114,16 @@ public struct PluginSnapshot: Codable, Equatable, Sendable {
         }
         let allCards = (panels ?? []).flatMap { $0.cards ?? [] }
         guard allCards.count <= 192 else { throw ModuleProblem("Too many control cards.") }
+        guard (panels ?? []).reduce(0, { $0 + ($1.collection?.items.count ?? 0) }) <= 192 else { throw ModuleProblem("Too many collection items.") }
         for panel in panels ?? [] {
+            if let customView = panel.customView {
+                guard panel.cards == nil, panel.forms == nil, panel.diagrams == nil, panel.collection == nil, !panel.usesMedia else { throw ModuleProblem("Conflicting custom view panel.") }
+                try customView.validate()
+            }
+            if let collection = panel.collection {
+                guard panel.cards == nil, panel.forms == nil, panel.diagrams == nil, !panel.usesMedia else { throw ModuleProblem("Conflicting collection panel.") }
+                try collection.validate()
+            }
             if let forms = panel.forms {
                 guard (1...4).contains(forms.count), panel.cards == nil, panel.diagrams == nil, !panel.usesMedia,
                       Set(forms.map(\.id)).count == forms.count else { throw ModuleProblem("Invalid form panel.") }
@@ -160,8 +178,14 @@ public struct PluginMessage: Codable, Sendable {
     public var bus: PluginBusMessage?
     public var agenda: PluginAgenda?
     public var agendaDate: Date?
-    public init(type: String, pluginID: String, session: UUID, sequence: UInt64 = 0, action: String? = nil, snapshot: PluginSnapshot? = nil, features: [String]? = nil, visible: Bool? = nil, frame: PluginFrame? = nil, bus: PluginBusMessage? = nil, agenda: PluginAgenda? = nil, agendaDate: Date? = nil) {
-        self.type = type; self.pluginID = pluginID; self.session = session; self.sequence = sequence; self.action = action; self.snapshot = snapshot; self.features = features; self.visible = visible; self.frame = frame; self.bus = bus; self.agenda = agenda; self.agendaDate = agendaDate
+    public var viewEvent: PluginViewEvent?
+    public var volumeCommand: PluginVolumeCommand?
+    public var volumeResult: PluginVolumeResult?
+    public var viewResource: PluginViewResourceRequest?
+    public var viewResourceResult: PluginViewResourceResult?
+    public var viewResourceCancel: UUID?
+    public init(type: String, pluginID: String, session: UUID, sequence: UInt64 = 0, action: String? = nil, snapshot: PluginSnapshot? = nil, features: [String]? = nil, visible: Bool? = nil, frame: PluginFrame? = nil, bus: PluginBusMessage? = nil, agenda: PluginAgenda? = nil, agendaDate: Date? = nil, viewEvent: PluginViewEvent? = nil, volumeCommand: PluginVolumeCommand? = nil, volumeResult: PluginVolumeResult? = nil, viewResource: PluginViewResourceRequest? = nil, viewResourceResult: PluginViewResourceResult? = nil, viewResourceCancel: UUID? = nil) {
+        self.type = type; self.pluginID = pluginID; self.session = session; self.sequence = sequence; self.action = action; self.snapshot = snapshot; self.features = features; self.visible = visible; self.frame = frame; self.bus = bus; self.agenda = agenda; self.agendaDate = agendaDate; self.viewEvent = viewEvent; self.volumeCommand = volumeCommand; self.volumeResult = volumeResult; self.viewResource = viewResource; self.viewResourceResult = viewResourceResult; self.viewResourceCancel = viewResourceCancel
     }
     public func encoded() throws -> Data {
         var data = try JSONEncoder().encode(self)

@@ -8,5 +8,6 @@ let package = Package(name: "NeroVoice", platforms: [.macOS("26.0")], products: 
  .executableTarget(name: "ModuleApp", dependencies: ["ModuleCore", "VoiceAudio", .product(name: "NookPluginSDK", package: "NookPluginSDK")]),
  .executableTarget(name: "PluginCheck", dependencies: [.product(name: "NookPluginSDK", package: "NookPluginSDK")]),
  .executableTarget(name: "SpeechCheck", dependencies: ["VoiceAudio"]),
- .testTarget(name: "ModuleCoreTests", dependencies: ["ModuleCore"])
+ .testTarget(name: "ModuleCoreTests", dependencies: ["ModuleCore"]),
+ .testTarget(name: "MeetingAudioTests", dependencies: ["ModuleCore", "VoiceAudio"])
 ], swiftLanguageModes: [.v5])
