@@ -1,0 +1,220 @@
+import AppKit
+import AVFoundation
+import Foundation
+import ModuleCore
+import VoiceAudio
+import NookPluginSDK
+
+/// Voice alone owns capture, model lease, endpointing and audible output. The
+/// caller receives ephemeral words through its exact reviewed SDK action run.
+@MainActor final class ConversationProvider {
+    var send: ((PluginBusMessage)->Void)?
+    var changed: (() -> Void)?
+    private(set) var active = false
+    private(set) var status = ""
+    private var request: UUID?, epoch = UUID()
+    private var sequence: UInt64 = 0, inputSequence: UInt64 = 0
+    private var duplex = ConversationDuplexState()
+    private var mode: String { duplex.mode.rawValue }
+    private var listening: Bool { duplex.listening }
+    private var playing = false, turn = 0
+    private var gate = ConversationTurn()
+    private var interruption = ConversationInterruption()
+    private var pendingRecognition: MeetingLiveUpdate?
+    private var audio: ConversationAudio?, recognizer: MeetingLiveTranscriber?
+    private var speaker: SpeechOutput?
+    private var task: Task<Void,Never>?, endpoint: Task<Void,Never>?
+    private var endpointID = UUID()
+    private var monitor: Task<Void,Never>?
+    private var observations: [NSObjectProtocol] = []
+    private var started = Date(), heartbeat = Date(), lastMeter = Date()
+    private var peak = 0.0, recognized = false
+    private weak var preferences: VoiceModel?
+    init() {
+        for name in [NSWorkspace.willSleepNotification,NSWorkspace.sessionDidResignActiveNotification] {
+            observations.append(NSWorkspace.shared.notificationCenter.addObserver(forName:name,object:nil,queue:.main){[weak self] _ in Task{@MainActor in self?.stop("Conversation stopped for sleep or lock")}})
+        }
+    }
+    func start(_ id: UUID, values: [String:PluginValue], preferences: VoiceModel, available: Bool) throws {
+        guard !active,available,!CommandLine.arguments.contains("--protocol-test") else {throw VoiceProblem.message("Finish the current Voice activity before Talk.")}
+        try PluginSpeechConversation.action.input.validate(values)
+        guard case .string(let requested)=values["mode"] else {throw VoiceProblem.message("Choose a duplex mode")}
+        let mode = try PluginSpeechConversation.mode(requested);self.preferences=preferences
+        duplex = ConversationDuplexState(mode: mode == "full" ? .full : .half)
+        active=true;request=id;epoch=UUID();sequence=0;inputSequence=0;turn=0;gate=ConversationTurn(pace:preferences.conversationPace);peak=0;recognized=false
+        interruption = ConversationInterruption(sensitivity: preferences.interruptionSensitivity); pendingRecognition = nil
+        let token=epoch;started=Date();heartbeat=Date();status="Preparing local conversation…";changed?()
+        task=Task{[weak self] in
+            guard let self else{return}
+            do {
+                let allowed=await AVCaptureDevice.requestAccess(for:.audio)
+                guard allowed else{throw VoiceProblem.message("Allow Nero Voice microphone access in System Settings.")}
+                try Task.checkCancellation();guard active,epoch==token else{return}
+                let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/NeroASR")
+                let onUpdate: (MeetingLiveUpdate) throws -> Void = { [weak self] value in
+                    guard let self,self.active,self.epoch==token,self.listening else{return}
+                    self.receiveRecognition(value)
+                }
+                let onFailure: (String) -> Void = { [weak self] error in guard let self,self.active,self.epoch == token else{return};self.stop(error,failed:true) }
+                let prepared = preferences.preloader.take(provider:preferences.dictationASR,locale:preferences.locale,helper:helper,update:onUpdate,failure:onFailure)
+                let recognizer=prepared ?? MeetingLiveTranscriber(),audio=ConversationAudio(),speaker=SpeechOutput()
+                if prepared != nil { SpeechTiming.mark("speechPreloadUsed") }
+                self.recognizer=recognizer;self.audio=audio;self.speaker=speaker;speaker.engineOutput=audio
+                if preferences.speechBackend == .qwen { try preferences.qwenOptions.validate(requireVoice:true); try await speaker.prepareQwen(mode:preferences.qwenOptions.mode) }
+                else if preferences.voiceID == AppleSpeechOutput.voice2Identifier { try speaker.prepareVoice2() }
+                speaker.changed={ [weak self] phase,error in guard let self,self.active,self.epoch==token else{return}
+                    if let error{self.stop(error,failed:true);return}
+                    if phase == .speaking{SpeechTiming.mark("playbackStarted",turn:self.turn);self.duplex.phase = .speaking;self.status="Speaking";self.emit("speaking",turn:self.turn)}
+                    if phase == .finished{self.interruption.endPlayback(at:self.audio?.signal.time ?? 0);self.playing=false;self.duplex.phase = .thinking;self.emit("played",turn:self.turn)}
+                    self.changed?()
+                }
+                audio.failure={ [weak self] error in guard let self,self.active,self.epoch == token else{return};self.stop(error,failed:true) }
+                if prepared == nil {
+                    try await recognizer.start(provider:preferences.dictationASR,tracks:["mic"],locale:preferences.locale,
+                                               helper:helper,update:onUpdate,failure:onFailure)
+                }
+                try Task.checkCancellation();guard active,epoch==token else{return}
+                try audio.start(microphone:preferences.microphone.isEmpty ? nil:preferences.microphone,full:mode=="full",feed:recognizer.feed)
+                for _ in 0..<60 {
+                    try Task.checkCancellation();guard active,epoch==token else{return}
+                    if audio.signal.time>0{break};try await Task.sleep(for:.milliseconds(50))
+                }
+                guard audio.signal.time>0 else{throw VoiceProblem.message("The microphone did not deliver audio")}
+                emitControls();SpeechTiming.mark("voiceReady");duplex.phase = .listening;status="Listening · \(preferences.dictationASR.title)";emit("ready",text:status,mode:mode);changed?()
+                monitor=Task{[weak self] in while !Task.isCancelled{try? await Task.sleep(for:.milliseconds(100));guard let self,self.active,self.epoch==token else{return};self.tick()} }
+            }catch{if epoch==token{stop(error.localizedDescription,failed:true)}}
+        }
+    }
+    private func tick(){
+        guard let audio else{return};let signal=audio.signal
+        if Date().timeIntervalSince(started)>7200{stop("Two-hour conversation limit reached. Press Talk for a new session.");return}
+        if signal.age>3{stop("The microphone stopped responding. Press Talk to reconnect.",failed:true);return}
+        if Date().timeIntervalSince(heartbeat)>10,let request{heartbeat=Date();send?(.init(.update,requestID:request,update:.init(.running,message:status)))}
+        peak=max(peak,signal.rms)
+        if Date().timeIntervalSince(lastMeter)>0.2{lastMeter=Date();var values=PluginSpeechConversation.values("meter");
+            if listening {values["text"] = .string(!recognized && Date().timeIntervalSince(started)>12 && peak<0.001 ? "No microphone sound detected · check the microphone in Voice settings" : "Listening · \(preferences?.dictationASR.title ?? "Local speech")")};values["level"] = .number(min(1,signal.rms*15));emit(values)
+            var output=PluginSpeechConversation.values("playbackMeter",turn:turn)
+            output["level"] = .number(playing && duplex.phase == .speaking ? audio.playbackLevel : 0);emit(output)}
+        let sensitivity = preferences?.interruptionSensitivity ?? 50
+        if sensitivity != interruption.sensitivity { interruption.sensitivity = sensitivity; emitControls() }
+        interruption.audio(rms: signal.rms, playbackLevel: audio.playbackLevel, through: signal.time, allowed: listening)
+        if let pending = pendingRecognition {
+            if !interruption.protects(at: signal.time) { pendingRecognition = nil }
+            else if interruption.decision(text: pending.text, start: pending.start, end: pending.end, now: signal.time) == .accept {
+                pendingRecognition = nil; acceptRecognition(pending)
+            }
+        }
+        if !interruption.protects(at: signal.time), gate.audio(rms:signal.rms,through:signal.time,allowed:listening){
+            speaker?.stop();playing=false;duplex.phase = .listening;status="Listening";emit("speechStarted",turn:turn);changed?()
+        }
+        guard listening,endpoint==nil,gate.canCommit(at:signal.time) else{return}
+        finishTurn()
+    }
+    private func receiveRecognition(_ value: MeetingLiveUpdate) {
+        guard value.text.utf8.count <= 2048 else { stop("Keep a spoken turn under 2 KB; pause between turns.", failed: true); return }
+        let time = audio?.signal.time ?? 0
+        switch interruption.decision(text: value.text, start: value.start, end: value.end, now: time) {
+        case .echo: pendingRecognition = nil; return
+        case .hold: pendingRecognition = value; return
+        case .accept: pendingRecognition = nil; acceptRecognition(value)
+        }
+    }
+    private func acceptRecognition(_ value: MeetingLiveUpdate) {
+        guard active, listening else { return }
+        do {
+            let time = audio?.signal.time ?? 0, wasSpeaking = gate.speaking
+            try gate.receive(value, now: time)
+            if !wasSpeaking && gate.speaking {
+                interruption.admitUser(at: time); speaker?.stop(); playing = false
+                duplex.phase = .listening; emit("speechStarted", turn: turn)
+            }
+            if !gate.text.isEmpty { recognized = true; emit("partial", text: gate.text) }
+        } catch { stop(error.localizedDescription, failed: true) }
+    }
+    private func emitControls() {
+        guard let preferences else { return }
+        let devices = MicrophoneDeviceService.inputDevices()
+        let device = devices.first { preferences.microphone.isEmpty ? $0.isDefault : $0.id == preferences.microphone }
+        let controls = PluginSpeechConversationControls(microphone: device?.name ?? "Selected microphone", recognition: preferences.dictationASR.title, sensitivity: preferences.interruptionSensitivity)
+        if let text = try? controls.encoded() { emit("controls", text: text) }
+    }
+    private func cancelEndpoint() { endpointID = UUID(); endpoint?.cancel(); endpoint = nil }
+    private func finishTurn(typed: String? = nil) {
+        SpeechTiming.mark("endpoint",turn:turn+1,milliseconds:1000*((audio?.signal.time ?? 0)-gate.lastVoice))
+        cancelEndpoint()
+        let commitStarted=ProcessInfo.processInfo.systemUptime
+        let token = epoch, id = UUID(); endpointID = id
+        endpoint = Task { [weak self] in
+            guard let self else { return }
+            defer { if self.endpointID == id { self.endpoint = nil } }
+            do {
+                guard let recognizer = self.recognizer else { throw VoiceProblem.message("Speech is not ready") }
+                try await recognizer.commit { [weak self] through in
+                    guard let self,self.active,self.epoch == token,self.endpointID == id else { return }
+                    // This callback runs inside the ordered ack parser. Never
+                    // wait for a continuation then retire through a later
+                    // capture clock: newer PCM may already be queued.
+                    let spoken = self.gate.commit(through: through)
+                    guard typed != nil || self.listening else { return }
+                    let text = (typed ?? spoken).trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !text.isEmpty else { return }
+                    // If the idle renderer retired during a long user turn,
+                    // restart it while the Agent is preparing its response.
+                    if self.preferences?.speechBackend == .apple && self.preferences?.voiceID == AppleSpeechOutput.voice2Identifier { try? self.speaker?.prepareVoice2() }
+                    self.turn += 1; SpeechTiming.mark("committed",turn:self.turn,milliseconds:1000*(ProcessInfo.processInfo.systemUptime-commitStarted)); self.duplex.phase = .thinking; self.audio?.recognition(self.listening)
+                    self.status = "Thinking"; self.emit("final",text:text,turn:self.turn); self.changed?()
+                }
+            } catch {
+                if !Task.isCancelled,self.active,self.epoch == token,self.endpointID == id { self.stop(error.localizedDescription,failed:true) }
+            }
+        }
+    }
+    func receive(_ message:PluginBusMessage) throws {
+        guard active,message.requestID==request,let frame=message.frame,frame.sequence==inputSequence else{throw VoiceProblem.message("Stale conversation command")}
+        try frame.validate(PluginSpeechConversation.input);inputSequence += 1
+        guard case .string(let kind)=frame.values["kind"] else{throw VoiceProblem.message("Missing conversation command")}
+        let target:Int={if case .number(let value)=frame.values["turn"]{return Int(value)};return turn}()
+        if target<turn{return};guard target==turn else{throw VoiceProblem.message("Unknown conversation turn")}
+        switch kind {
+        case "text":
+            guard case .string(let text)=frame.values["text"],!text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else {throw VoiceProblem.message("Enter a message")}
+            interruption.admitUser(at: audio?.signal.time ?? 0); pendingRecognition = nil
+            speaker?.stop();playing=false
+            emit("speechStarted",turn:turn);duplex.phase = .thinking;audio?.recognition(listening)
+            status="Thinking";finishTurn(typed:text)
+        case "speak":
+            guard !playing,let preferences,case .string(let text)=frame.values["text"],!text.isEmpty else{throw VoiceProblem.message("Speech output is busy or empty")}
+            SpeechTiming.mark("speakReceived",turn:turn)
+            interruption.beginPlayback(text, at: audio?.signal.time ?? 0);pendingRecognition = nil
+            playing=true;duplex.phase = .speaking;audio?.recognition(listening);status="Preparing speech…"
+            try speaker?.speak(text, backend:preferences.speechBackend, voiceID:preferences.voiceID,
+                               appleVoice:preferences.selectedSpeechVoice, qwenSpeaker:preferences.qwenSpeaker,
+                               locale:preferences.locale, delivery:preferences.speechDelivery, qwenOptions:preferences.qwenOptions)
+        case "sensitivity":
+            guard case .string(let value)=frame.values["text"], let number=Int(value), (0...100).contains(number), let preferences else { throw VoiceProblem.message("Choose an interruption sensitivity from 0 to 100.") }
+            preferences.interruptionSensitivity=number;interruption.sensitivity=number;interruption.resetEvidence();pendingRecognition=nil;emitControls()
+        case "listen":duplex.phase = .listening;audio?.recognition(listening);status="Listening";emit("listening",turn:turn)
+        case "interrupt":interruption.endPlayback(at:audio?.signal.time ?? 0);speaker?.stop();playing=false;duplex.phase = .thinking;audio?.recognition(listening)
+        case "mode":
+            guard case .string(let value)=frame.values["mode"] else{throw VoiceProblem.message("Choose a duplex mode")}
+            let next=try PluginSpeechConversation.mode(value)
+            if next=="full",audio?.echoControl != true{emit("mode",text:"Full duplex echo control is unavailable on this route. Half duplex remains active.",mode:mode);return}
+            duplex.mode = next == "full" ? .full : .half
+            if !listening { gate.discard(through:audio?.signal.time ?? 0);pendingRecognition=nil;interruption.resetEvidence() }
+            audio?.recognition(listening);emit("mode",mode:mode)
+        default:throw VoiceProblem.message("Unknown conversation command")
+        };changed?()
+    }
+    private func emit(_ kind:String,text:String?=nil,mode:String?=nil,turn:Int?=nil){emit(PluginSpeechConversation.values(kind,text:text,mode:mode,turn:turn))}
+    private func emit(_ values:[String:PluginValue]){
+        guard let request,active else{return};let frame=PluginRunFrame(sequence:sequence,values:values)
+        guard (try? frame.validate(PluginSpeechConversation.output)) != nil else{stop("Conversation frame exceeded its limit",failed:true);return}
+        sequence += 1;send?(.init(.stream,requestID:request,frame:frame))
+    }
+    func stop(_ message:String="Conversation stopped",failed:Bool=false){
+        let old=request;request=nil;active=false;epoch=UUID();task?.cancel();task=nil;cancelEndpoint();monitor?.cancel();monitor=nil;duplex.phase = .closed
+        speaker?.changed=nil;speaker?.shutdown();speaker=nil;audio?.stop();audio=nil;recognizer?.cancel();recognizer=nil;playing=false;gate=ConversationTurn();interruption=ConversationInterruption();pendingRecognition=nil;status=message;changed?()
+        if let old{send?(.init(.update,requestID:old,update:.init(failed ? .failed:.cancelled,message:String(message.prefix(280)))))}
+    }
+    func cancel(_ id:UUID){if id==request{stop()}}
+}

@@ -1,8 +1,9 @@
 // swift-tools-version: 6.0
 import PackageDescription
 let package = Package(name: "NeroVoice", platforms: [.macOS("26.0")], products: [
- .executable(name: "ModuleApp", targets: ["ModuleApp"]), .executable(name: "PluginCheck", targets: ["PluginCheck"]), .executable(name: "SpeechCheck", targets: ["SpeechCheck"])
+ .executable(name: "ModuleApp", targets: ["ModuleApp"]), .executable(name: "InterpreterPreview", targets: ["InterpreterPreview"]), .executable(name: "PluginCheck", targets: ["PluginCheck"]), .executable(name: "SpeechCheck", targets: ["SpeechCheck"])
 ], dependencies: [.package(path: "Vendor/NookPluginSDK")], targets: [
+ .executableTarget(name: "InterpreterPreview", dependencies: [.product(name: "NookPluginSDK", package: "NookPluginSDK")]),
  .target(name: "ModuleCore", dependencies: [.product(name: "NookPluginSDK", package: "NookPluginSDK")]),
  .target(name: "VoiceAudio", dependencies: ["ModuleCore"]),
  .executableTarget(name: "ModuleApp", dependencies: ["ModuleCore", "VoiceAudio", .product(name: "NookPluginSDK", package: "NookPluginSDK")]),

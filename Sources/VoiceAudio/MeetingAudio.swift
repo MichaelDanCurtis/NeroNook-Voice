@@ -5,10 +5,13 @@ import ModuleCore
 /// Copies a bounded number of callback buffers, then writes/rotates them on one
 /// worker queue. Never sends audio through the plugin protocol or holds a session in RAM.
 public final class MeetingAudioWriter: @unchecked Sendable {
-    private let queue = DispatchQueue(label: "cafe.nero.voice.meeting-writer")
+    private let queue: DispatchQueue
+    private let snapshotLock = NSLock()
+    private var cached: (duration: Double, levels: [String: Double], last: [String: Double], error: String?) = (0, [:], [:], nil)
     private let slots = DispatchSemaphore(value: 64)
     private let store: MeetingStore
     private var meeting: Meeting
+    private var committedDuration: Double
     private var active = true
     private var failure: String?
     private var files: [String: AVAudioFile] = [:]
@@ -19,9 +22,22 @@ public final class MeetingAudioWriter: @unchecked Sendable {
     private var last: [String: Double] = [:]
     private let format = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1)!
     private var serial: Int
-    public init(store: MeetingStore, meeting: Meeting) throws {
-        self.store = store; self.meeting = meeting; serial = meeting.chunks.count; try store.save(meeting)
+    private var liveFeed: MeetingLiveAudioFeed?
+    private var speakerFeed: MeetingLiveAudioFeed?
+    public convenience init(store: MeetingStore, meeting: Meeting, liveFeed: MeetingLiveAudioFeed? = nil, speakerFeed: MeetingLiveAudioFeed? = nil) throws {
+        try self.init(store: store, meeting: meeting, liveFeed: liveFeed, speakerFeed: speakerFeed,
+                      storageQueue: DispatchQueue(label: "cafe.nero.voice.meeting-writer"))
     }
+    init(store: MeetingStore, meeting: Meeting, liveFeed: MeetingLiveAudioFeed? = nil, speakerFeed: MeetingLiveAudioFeed? = nil,
+         storageQueue: DispatchQueue) throws {
+        queue = storageQueue
+        self.store = store; self.meeting = meeting; committedDuration = meeting.duration; self.liveFeed = liveFeed; self.speakerFeed = speakerFeed; serial = meeting.chunks.count; try store.save(meeting)
+        publishSnapshot()
+    }
+    /// Prepared observers start at the next durable buffer, without delaying
+    /// capture or accumulating audio during model initialization.
+    public func attachLiveFeed(_ feed: MeetingLiveAudioFeed?) { queue.async { self.liveFeed = feed } }
+    public func attachSpeakerFeed(_ feed: MeetingLiveAudioFeed?) { queue.async { self.speakerFeed = feed } }
     public func append(_ input: AVAudioPCMBuffer, track: String, start: Double) {
         guard slots.wait(timeout: .now()) == .success else { queue.async { self.fail("Disk writing could not keep up. Saved audio is recoverable.") }; return }
         guard ["mic", "system"].contains(track), start.isFinite, start >= 0, input.frameLength > 0, input.frameLength <= 8192,
@@ -30,7 +46,7 @@ public final class MeetingAudioWriter: @unchecked Sendable {
         let source = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input.audioBufferList))
         let target = UnsafeMutableAudioBufferListPointer(copy.mutableAudioBufferList)
         for index in 0..<source.count { memcpy(target[index].mData!, source[index].mData!, Int(source[index].mDataByteSize)) }
-        queue.async { defer { self.slots.signal() }; guard self.active else { return }; do { try self.write(copy, track: track, start: start) } catch { self.fail(error.localizedDescription) } }
+        queue.async { defer { self.publishSnapshot(); self.slots.signal() }; guard self.active else { return }; do { try self.write(copy, track: track, start: start) } catch { self.fail(error.localizedDescription) } }
     }
     private func write(_ input: AVAudioPCMBuffer, track: String, start: Double) throws {
         guard start <= 4 * 3600 else { throw VoiceProblem.message("Four-hour recording limit reached. Start another meeting to continue.") }
@@ -60,21 +76,30 @@ public final class MeetingAudioWriter: @unchecked Sendable {
         }
         try files[track]!.write(from: output)
         chunks[track]!.duration = Double(files[track]!.length) / 16000
+        liveFeed?.append(output, track: track, start: start)
+        speakerFeed?.append(output, track: track, start: start)
         if chunks[track]!.duration >= 15 { try close(track) }
     }
     private func close(_ track: String) throws {
         files.removeValue(forKey: track) // Close CAF before committing its index.
-        if let chunk = chunks.removeValue(forKey: track), chunk.duration > 0 { meeting.chunks.append(chunk); try store.save(meeting) }
+        if let chunk = chunks.removeValue(forKey: track), chunk.duration > 0 { meeting.chunks.append(chunk); committedDuration = max(committedDuration, chunk.start + chunk.duration); try store.save(meeting) }
     }
-    private func fail(_ message: String) { if failure == nil { failure = String(message.prefix(450)) }; active = false }
+    private func fail(_ message: String) { if failure == nil { failure = String(message.prefix(450)) }; active = false; publishSnapshot() }
+    private func publishSnapshot() {
+        let value = (max(committedDuration, chunks.values.map { $0.start + $0.duration }.max() ?? 0), levels, last, failure)
+        snapshotLock.lock(); cached = value; snapshotLock.unlock()
+    }
     public func snapshot() -> (duration: Double, levels: [String: Double], last: [String: Double], error: String?) {
-        queue.sync { (max(meeting.duration, chunks.values.map { $0.start + $0.duration }.max() ?? 0), levels, last, failure) }
+        snapshotLock.lock(); defer { snapshotLock.unlock() }; return cached
     }
+    /// Explicit asynchronous storage barrier for file-fed fixtures and owners
+    /// that need durability, rather than using the UI meter as a queue drain.
+    public func synchronize() async { await withCheckedContinuation { continuation in queue.async { continuation.resume() } } }
     public func mark(_ text: String) { queue.async {
         guard self.meeting.marks.count < 1000 else { return }
         let time = max(self.meeting.duration, self.chunks.values.map { $0.start + $0.duration }.max() ?? 0)
         self.meeting.marks.append(MeetingMark(time: time, text: String(text.prefix(200))))
-        do { try self.store.save(self.meeting) } catch { self.fail(error.localizedDescription) }
+        do { try self.store.save(self.meeting); self.publishSnapshot() } catch { self.fail(error.localizedDescription) }
     } }
     public func finish(state: String, issue: String = "") async throws -> Meeting {
         try await withCheckedThrowingContinuation { continuation in queue.async {
@@ -102,7 +127,7 @@ public final class MeetingAudioWriter: @unchecked Sendable {
         converters = [:]
         for track in Array(files.keys) { try close(track) }
         meeting.state = failure == nil ? state : "interrupted"; meeting.issue = failure ?? issue
-        try store.save(meeting); return meeting
+        try store.save(meeting); publishSnapshot(); return meeting
     }
     /// Inspect only our own named CAF files; salvage chunks closed after the last
     /// manifest commit. A malformed/missing tail is reported rather than invented.

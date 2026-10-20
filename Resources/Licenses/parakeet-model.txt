@@ -1,0 +1,15 @@
+Optional Parakeet meeting transcription model
+
+Original model: NVIDIA parakeet-tdt-0.6b-v3
+https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3
+License: Creative Commons Attribution 4.0 International (CC BY 4.0)
+https://creativecommons.org/licenses/by/4.0/
+
+MLX conversion and encoder INT8 quantization:
+beshkenadze/parakeet-tdt-0.6b-v3-mlx-encoder-int8
+https://huggingface.co/beshkenadze/parakeet-tdt-0.6b-v3-mlx-encoder-int8
+Pinned revision: b58cb0ec089186177382a49ffd2109ae1a7664b5
+
+Nero Voice downloads the model only after the user chooses Prepare Parakeet.
+The model weights are not bundled with this application. Attribution to NVIDIA
+and the conversion author is retained here and in the model documentation.

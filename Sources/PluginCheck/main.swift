@@ -18,6 +18,7 @@ do {
             try message.snapshot?.validate()
             try message.bus?.registration?.validate()
             try message.bus?.update?.validate()
+            try message.caption?.validate()
         }
         print("OK")
     }
