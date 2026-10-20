@@ -7,26 +7,119 @@ import VoiceAudio
 import NookPluginSDK
 
 @MainActor final class VoiceModel: ObservableObject {
+    @Published var personalization = DictationPersonalization()
+    @Published var dictationHistory = DictationHistory()
+    @Published var dictationPage = "dictate"
+    @Published var personalizationStatus = ""
+    @Published var styleApps: [DictationAppStyle] = []
+    @Published var styleAppID = ""
+    @Published var styleAppQuery = ""
+    @Published var selectedSnippet: UUID?
+    @Published var selectedHistory: UUID?
+    @Published var personalizationPage = 0
+    var personalizationStore: DictationPersonalizationStore?
+    var personalizationFault = false
+    var historyFault = false
+    var historyEpoch = UUID()
+    var historyLastRefresh = Date.distantPast
+    var historyTicket: UUID?
+    var recordingHistoryID: UUID?
+    var recordingTone = DictationTone.clean
+    var recordingTerms = ""
+    var recordingSnippets: [DictationSnippet] = []
+    var recordingAppID = ""
+    var recordingAppName = "Nero Voice draft"
+    var appPicker: NSOpenPanel?
+    var draftPersonalizationWorker: Task<Result<String, Error>, Never>?
+    var draftPersonalizationTask: Task<Void, Never>?
+    let preloader = SpeechPreloader()
     @Published var session = VoiceSession()
-    @Published var status = "Record locally, then review your words"
+    @Published var status = "Hold your dictation shortcut, speak, then release to paste"
     @Published var reply = ""
+    @Published var overlayText: String?
     @Published var settings = false
     @Published var revision = UUID()
     @Published var microphones = MicrophoneDeviceService.inputDevices()
     @Published var languages: [String] = ["en-US"]
     @Published var catalog: [PluginCatalogEntry] = []
     @Published var microphone = UserDefaults.standard.string(forKey: "microphone") ?? "" { didSet { UserDefaults.standard.set(microphone, forKey: "microphone") } }
-    @Published var locale = UserDefaults.standard.string(forKey: "locale") ?? "en-US" { didSet { UserDefaults.standard.set(locale, forKey: "locale") } }
+    @Published var locale = UserDefaults.standard.string(forKey: "locale") ?? "en-US" { didSet { preloader.release(); UserDefaults.standard.set(locale, forKey: "locale") } }
     @Published var dictionary = UserDefaults.standard.string(forKey: "dictionary") ?? "" { didSet { UserDefaults.standard.set(String(dictionary.prefix(4096)), forKey: "dictionary") } }
-    @Published var shortcut = UserDefaults.standard.string(forKey: "shortcut") ?? "Off" { didSet { UserDefaults.standard.set(shortcut, forKey: "shortcut"); configureHotkey() } }
+    @Published var tone = DictationTone(rawValue: UserDefaults.standard.string(forKey: "dictationTone") ?? "") ?? .clean { didSet { UserDefaults.standard.set(tone.rawValue, forKey: "dictationTone") } }
+    @Published var interruptionSensitivity = min(100, max(0, UserDefaults.standard.object(forKey: "interruptionSensitivity") as? Int ?? 50)) {
+        didSet { UserDefaults.standard.set(interruptionSensitivity, forKey: "interruptionSensitivity") }
+    }
+    @Published var conversationPace = ConversationPace(rawValue: UserDefaults.standard.string(forKey: "conversationPace") ?? "") ?? .quick {
+        didSet { UserDefaults.standard.set(conversationPace.rawValue, forKey: "conversationPace") }
+    }
+    @Published var dictationASR = VoiceASRProvider(rawValue: UserDefaults.standard.string(forKey: "dictationASRProvider") ?? "") ?? .apple {
+        didSet { UserDefaults.standard.set(dictationASR.rawValue, forKey: "dictationASRProvider") }
+    }
+    @Published var parakeetReady = LocalASREngine(.parakeet).ready
+    var selectedModelReady: Bool { dictationASR == .apple || LocalASREngine(dictationASR).ready }
+    private var localStream: LocalDictationStream?
+    private var localReady: Task<LocalDictationStream, Error>?
+    func chooseASR(_ provider: VoiceASRProvider) { guard !busy else { return }; preloader.release(); dictationASR = provider; status = "\(provider.title) selected"; changed?() }
+    @Published private(set) var shortcut: DictationShortcut? = {
+        if let data = UserDefaults.standard.data(forKey: "dictationShortcutBinding"),
+           let saved = try? JSONDecoder().decode(DictationShortcut.self, from: data), saved.valid { return saved }
+        if let old = UserDefaults.standard.string(forKey: "shortcut") { return DictationShortcut.fromLegacy(old) }
+        return .standard
+    }()
     @Published var shortcutStyle = DictationShortcutStyle(rawValue: UserDefaults.standard.string(forKey: "shortcutStyle") ?? "") ?? .hold { didSet { UserDefaults.standard.set(shortcutStyle.rawValue, forKey: "shortcutStyle"); shortcutState.reset() } }
-    @Published var dictateAtCursor = UserDefaults.standard.object(forKey: "dictateAtCursor") as? Bool ?? true { didSet { UserDefaults.standard.set(dictateAtCursor, forKey: "dictateAtCursor") } }
     @Published var inserting = false
-    @Published var canUndoInsertion = false
+    @Published var polishing = false
     @Published var targetName = "your app"
     @Published var accessibilityAllowed = false
     @Published var sounds = UserDefaults.standard.bool(forKey: "sounds") { didSet { UserDefaults.standard.set(sounds, forKey: "sounds") } }
+    @Published var speechBackend = SpeechBackend(rawValue: UserDefaults.standard.string(forKey: "speechBackend") ?? "") ?? .apple {
+        didSet { speaker.shutdown(); UserDefaults.standard.set(speechBackend.rawValue, forKey: "speechBackend") }
+    }
+    @Published var qwenSpeaker = QwenSpeaker(rawValue: UserDefaults.standard.string(forKey: "qwenSpeaker") ?? "") ?? .ryan {
+        didSet { stopSpeaking(); UserDefaults.standard.set(qwenSpeaker.rawValue, forKey: "qwenSpeaker") }
+    }
+    @Published var qwenOptions = QwenOptions.saved(UserDefaults.standard.data(forKey: "qwenOptions")) {
+        didSet {
+            speaker.shutdown()
+            UserDefaults.standard.set(try? JSONEncoder().encode(qwenOptions), forKey: "qwenOptions")
+            qwenReady = (try? QwenModel(mode: qwenOptions.mode))?.ready == true
+            changed?()
+        }
+    }
+    @Published var qwenProfiles = (try? QwenVoiceLibrary().list()) ?? []
+    @Published var referenceName = ""
+    @Published var referenceTranscript = ""
+    @Published var referenceSource: URL?
+    @Published var referenceChecking = false
+    @Published var referenceSaving = false
+    @Published var referenceRecording = false
+    @Published var referenceElapsed = 0
+    @Published var qwenPreview = "Welcome back. We have time to review your notes, or we can pick up right where we left off."
+    @Published var lastArchivedVoice: UUID?
+    var showQwenStudio: (() -> Void)?
+    let referenceRecorder = QwenReferenceRecorder()
+    var referenceTimer: Task<Void, Never>?
+    var referenceOwned = false
+    var referenceEpoch = UUID()
+    @Published var qwenReady = (try? QwenModel(mode: QwenOptions.saved(UserDefaults.standard.data(forKey: "qwenOptions")).mode))?.ready == true
+    func chooseSpeechBackend(_ value: SpeechBackend) { guard !busy else { return }; if speechBackend != value { speechBackend = value }; status = "\(value.title) selected"; changed?() }
+    func chooseQwenSpeaker(_ value: QwenSpeaker) { guard !busy else { return }; qwenSpeaker = value; qwenOptions.mode = .preset; changed?() }
+    var speechOutputReady: Bool { speechBackend == .apple || qwenReady }
     @Published var voiceID = UserDefaults.standard.string(forKey: "voiceID") ?? "" { didSet { UserDefaults.standard.set(voiceID, forKey: "voiceID") } }
+    @Published var speechDelivery = SpeechDelivery(rawValue: UserDefaults.standard.string(forKey: "speechDelivery") ?? "") ?? .natural {
+        didSet { stopSpeaking(); UserDefaults.standard.set(speechDelivery.rawValue, forKey: "speechDelivery") }
+    }
+    var speechVoices: [AVSpeechSynthesisVoice] {
+        AVSpeechSynthesisVoice.speechVoices().filter { $0.language.hasPrefix(String(locale.prefix(2))) }
+            .sorted { $0.quality.rawValue == $1.quality.rawValue ? $0.name < $1.name : $0.quality.rawValue > $1.quality.rawValue }
+    }
+    var selectedSpeechVoice: AVSpeechSynthesisVoice? {
+        if !voiceID.isEmpty { return AVSpeechSynthesisVoice(identifier: voiceID) }
+        return speechVoices.first { $0.language == locale } ?? AVSpeechSynthesisVoice(language: locale)
+    }
+    var speechVoiceName: String { if speechBackend == .qwen { return "Qwen3 · " + (qwenOptions.mode == .preset ? qwenSpeaker.rawValue : qwenOptions.mode == .design ? "Designed voice" : qwenProfiles.first(where: { $0.id == qwenOptions.cloneID })?.name ?? "Choose cloned voice") }; return voiceID == AppleSpeechOutput.voice2Identifier ? "Apple · American English · Voice 2" : selectedSpeechVoice?.name ?? "Voice unavailable" }
+    var speechPhaseChanged: ((SpeechPlayback.Phase, String?) -> Void)?
+    func chooseSpeechVoice(_ id: String) { stopSpeaking(); voiceID = id; changed?() }
     @Published var selectedKey = UserDefaults.standard.string(forKey: "assistant") ?? "" {
         didSet {
             pinnedAction = catalog.first { $0.address.key == selectedKey }?.action
@@ -42,13 +135,14 @@ import NookPluginSDK
     var cancelInvocation: ((UUID) -> Void)?
     var reveal: (() -> Void)?
     var meetingActive: (() -> Bool)?
+    var stopMeetingPlayback: (() -> Void)?
     private var pinnedAction: PluginRegisteredAction? = UserDefaults.standard.data(forKey: "assistantDefinition").flatMap { try? JSONDecoder().decode(PluginRegisteredAction.self, from: $0) }
     private var pipeline: SpeechPipeline?
     private var work: Task<Void, Never>?
     private var deadline: Task<Void, Never>?
     private var assetTask: Task<Void, Never>?
     private var assetGeneration = UUID()
-    private let speaker = AVSpeechSynthesizer()
+    private let speaker = SpeechOutput()
     private let hotkey = PushToTalk()
     private var observations = Set<AnyCancellable>()
     private var lifecycleObservers: [NSObjectProtocol] = []
@@ -60,13 +154,55 @@ import NookPluginSDK
     private let overlay = DictationOverlay()
     private var target: DictationInsertion.Target?
     private var insertionWork: Task<Void, Never>?
+    private var polishWork: Task<String, Error>?
     private var insertionGeneration = UUID()
     private var overlayCompletion: Task<Void, Never>?
     private var dictating = false
-    var busy: Bool { session.recording || waiting || preparingAssets || inserting || meetingActive?() == true }
+    private var captionVisible = false
+    private var captionDisplayNumber: UInt32?
+    private var captionResult = false
+    var hostCaptionAvailable = false
+    var enhancedCaptionAvailable = false
+    @Published var captionPlacement = PluginTransientCaption.Placement(rawValue: UserDefaults.standard.string(forKey: "captionPlacement") ?? "") ?? .nook {
+        didSet { UserDefaults.standard.set(captionPlacement.rawValue, forKey: "captionPlacement") }
+    }
+    var usesHostCaption: Bool { hostCaptionAvailable && (captionPlacement == .nook || enhancedCaptionAvailable) }
+    var captionChanged: (() -> Void)?
+    private(set) var inputLevel = 0.0
+    private var levelTask: Task<Void, Never>?
+    private var captionFault = false
+    var busy: Bool { referenceChecking || referenceSaving || referenceRecording || appPicker != nil || session.recording || waiting || preparingAssets || polishing || inserting || meetingActive?() == true }
+    var transientCaption: PluginTransientCaption? {
+        guard usesHostCaption, captionVisible else { return nil }
+        let words = !captionResult && session.phase == .preparing ? "" : overlayText ?? session.transcript
+        let safeText = String(words.unicodeScalars.suffix(220))
+        return PluginTransientCaption(captionResult ? .result : .active,
+                                      title: captionResult ? "Nero Voice" : "Dictating to \(targetName.prefix(55))",
+                                      text: safeText, detail: String((status + " · " + recordingTone.rawValue).prefix(160)),
+                                      symbol: captionResult ? "checkmark.circle.fill" : "waveform",
+                                      displayNumber: captionDisplayNumber,
+                                      placement: enhancedCaptionAvailable ? captionPlacement : nil,
+                                      activity: enhancedCaptionAvailable ? (captionFault ? .error : captionResult ? .complete : session.phase == .listening ? .recording : .processing) : nil,
+                                      level: enhancedCaptionAvailable ? inputLevel : nil)
+    }
     var assistant: PluginCatalogEntry? { catalog.first { $0.address.key == selectedKey && $0.action == pinnedAction && $0.action.map(VoiceContract.accepts) == true } }
     init() {
+        preloader.objectWillChange.sink { [weak self] _ in Task { @MainActor in self?.changed?() } }.store(in: &observations)
+        loadPersonalization()
+        speaker.changed = { [weak self] phase, error in
+            guard let self else { return }
+            let wasSpeaking = self.speaking
+            self.speaking = phase == .preparing || phase == .speaking
+            if let error { self.status = error }
+            else if phase == .preparing { self.status = "Preparing \(self.speechBackend == .qwen ? "Qwen" : "Apple") speech…" }
+            else if phase == .speaking { self.status = "Reading aloud · \(self.speechVoiceName)" }
+            else if phase == .finished { self.status = "Reading finished" }
+            else if phase == .idle && wasSpeaking { self.status = "Reading stopped" }
+            self.speechPhaseChanged?(phase, error)
+            self.changed?()
+        }
         objectWillChange.sink { [weak self] _ in Task { @MainActor in self?.changed?() } }.store(in: &observations)
+        hotkey.cancelled = { [weak self] in self?.cancel(); self?.status = "Shortcut interrupted · no text pasted" }
         hotkey.pressed = { [weak self] in self?.shortcutPressed() }
         hotkey.released = { [weak self] in
             guard let self else { return }
@@ -77,7 +213,7 @@ import NookPluginSDK
             configureHotkey()
             Task { [weak self] in self?.languages = await SpeechTranscriber.supportedLocales.map { $0.identifier(.bcp47) }.sorted() }
             for name in [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
-                lifecycleObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.cancel(); self?.status = "Stopped for sleep or screen lock" } })
+                lifecycleObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.cancel(); self?.speaker.shutdown(); self?.status = "Stopped for sleep or screen lock" } })
             }
         }
     }
@@ -86,72 +222,86 @@ import NookPluginSDK
         case .stop: stopRecording()
         case .none: break
         case .start:
-            guard !settings else { shortcutState.reset(); status = "Close Voice settings before dictating"; return }
             overlayCompletion?.cancel()
-            if dictateAtCursor {
-                do {
-                    target = try insertion.capture(); targetName = target!.name; dictating = true
-                    beginRecording(); overlay.show(model: self)
-                } catch {
-                    shortcutState.reset(); status = error.localizedDescription
-                    overlay.show(model: self)
-                }
-            } else { record(); reveal?() }
+            do {
+                target = try insertion.capture(); targetName = target!.name; dictating = true
+                captionDisplayNumber = target?.displayNumber; captionVisible = true; captionResult = false; overlayText = nil
+                beginRecording()
+                if !usesHostCaption { overlay.show(model: self) }
+            } catch {
+                shortcutState.reset(); status = error.localizedDescription
+                overlay.show(model: self)
+            }
         }
     }
     private func finishDictation(into target: DictationInsertion.Target) {
-        self.target = nil; dictating = false; inserting = true; canUndoInsertion = false
-        status = "Inserting into \(target.name)…"
-        let text = session.transcript; let generation = UUID(); insertionGeneration = generation
+        self.target = nil; dictating = false; inserting = true
+        status = "Pasting into \(target.name)…"
+        let text = session.transcript; let historyID = recordingHistoryID; let generation = UUID(); insertionGeneration = generation
         insertionWork = Task { [self] in
             defer { inserting = false }
             do {
                 try await insertion.insert(text, into: target)
                 guard generation == insertionGeneration else { return }
-                canUndoInsertion = insertion.canUndo; status = "Inserted into \(target.name)"
-                overlayCompletion = Task { [weak self] in
-                    try? await Task.sleep(for: .seconds(6)); guard !Task.isCancelled else { return }; self?.overlay.hide()
-                }
+                setHistoryOutcome(historyID, value: "Paste sent")
+                status = "Paste sent to \(target.name)"
+                captionResult = true
+                scheduleOverlayDismissal(after: 5)
             } catch {
                 guard generation == insertionGeneration else { return }
+                setHistoryOutcome(historyID, value: "Paste failed")
                 status = error.localizedDescription
+                captionFault = true; captionResult = true
+                scheduleOverlayDismissal(after: 8)
             }
         }
     }
-    /// Explicit recovery for a reviewed draft; five seconds to focus its destination.
-    func insertDraft() {
-        guard !busy, !session.transcript.isEmpty else { return }
-        guard insertion.permitted else { settings = true; status = "Allow text insertion, then return to your draft."; return }
-        inserting = true; overlayCompletion?.cancel(); overlay.show(model: self)
-        let generation = UUID(); insertionGeneration = generation
-        insertionWork = Task { [self] in
-            do {
-                for remaining in (1...5).reversed() {
-                    status = "Click the destination text field · inserting in \(remaining)…"
-                    try await Task.sleep(for: .seconds(1))
-                }
-                try Task.checkCancellation(); guard generation == insertionGeneration else { inserting = false; return }
-                let destination = try insertion.capture(); targetName = destination.name
-                inserting = false; finishDictation(into: destination)
-            } catch {
-                inserting = false
-                if generation == insertionGeneration { status = error.localizedDescription }
-            }
-        }
-    }
-    func undoInsertion() {
-        guard !busy else { return }; inserting = true; overlayCompletion?.cancel()
-        let generation = UUID(); insertionGeneration = generation
-        insertionWork = Task { [self] in
-            defer { inserting = false; canUndoInsertion = insertion.canUndo }
-            do { try await insertion.undoLast(); guard generation == insertionGeneration else { return }; status = "Dictation undone" }
-            catch { guard generation == insertionGeneration else { return }; status = error.localizedDescription }
+    private func scheduleOverlayDismissal(after seconds: Double) {
+        overlayCompletion?.cancel()
+        overlayCompletion = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
+            guard !Task.isCancelled, let self else { return }
+            self.captionVisible = false
+            self.overlay.hide()
+            self.changed?()
         }
     }
     func requestInsertionPermission() { insertion.requestPermission(); accessibilityAllowed = insertion.permitted }
     func dismissOverlay() { if session.recording || inserting { cancel() }; overlayCompletion?.cancel(); overlay.hide() }
-    func configureHotkey() { guard !CommandLine.arguments.contains("--protocol-test") else { return }; do { try hotkey.configure(shortcut) } catch { status = error.localizedDescription } }
+    var shortcutName: String { shortcut?.displayName ?? "Off" }
+    func configureHotkey() { guard !CommandLine.arguments.contains("--protocol-test"), Bundle.main.object(forInfoDictionaryKey: "NeroLiveFixtureAudio") == nil else { return }; do { try hotkey.configure(shortcut) } catch { status = error.localizedDescription } }
+    func pauseShortcutForRecording() { hotkey.stop() }
+    func resumeShortcutAfterRecording() { configureHotkey() }
+    func chooseShortcut(_ candidate: DictationShortcut?) {
+        guard !busy else { return }
+        guard candidate?.valid ?? true else { status = "Choose Fn, modifiers, a key combination or an F-key."; configureHotkey(); return }
+        do {
+            try hotkey.configure(candidate)
+            shortcut = candidate
+            UserDefaults.standard.set(candidate.flatMap { try? JSONEncoder().encode($0) }, forKey: "dictationShortcutBinding")
+            UserDefaults.standard.set(candidate == nil ? "Off" : "Custom", forKey: "shortcut")
+            status = candidate.map { "Dictation shortcut set to \($0.displayName)" } ?? "Dictation shortcut off"
+        } catch {
+            configureHotkey()
+            status = error.localizedDescription
+        }
+    }
     func refreshDevices() { microphones = MicrophoneDeviceService.inputDevices() }
+    func prepareConversation() {
+        guard !busy, !speaking, selectedModelReady else { return }
+        preparingAssets = true
+        let generation = UUID(); assetGeneration = generation
+        let provider = dictationASR, language = locale
+        assetTask = Task { [self] in
+            do { try await preloader.prepare(provider: provider, locale: language, helper: Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/NeroASR")) }
+            catch { if generation == assetGeneration, !Task.isCancelled { status = error.localizedDescription } }
+            if generation == assetGeneration { preparingAssets = false; assetTask = nil; changed?() }
+        }
+    }
+    func releasePreparedSpeech() {
+        guard !preparingAssets || preloader.preparing else { return }
+        preloader.release(); assetGeneration = UUID(); assetTask?.cancel(); assetTask = nil; preparingAssets = false; changed?()
+    }
     func prepareAssets() {
         guard !busy else { return }; preparingAssets = true; status = "Preparing Apple Speech language…"
         let generation = UUID(); assetGeneration = generation; let language = locale
@@ -161,11 +311,43 @@ import NookPluginSDK
             if generation == assetGeneration { preparingAssets = false; assetTask = nil }
         }
     }
+    func prepareLocalModel() {
+        guard !busy else { return }
+        guard dictationASR != .apple else { prepareAssets(); return }
+        preloader.release()
+        let engine = LocalASREngine(dictationASR)
+        preparingAssets = true; status = "Preparing \(engine.name) · 756 MB download…"
+        let generation = UUID(); assetGeneration = generation
+        assetTask = Task { [self] in
+            do {
+                try await engine.prepare()
+                try Task.checkCancellation()
+                guard generation == assetGeneration else { return }
+                status = "\(engine.name) ready for dictation and meetings"
+            } catch {
+                if !Task.isCancelled, generation == assetGeneration { status = error.localizedDescription }
+            }
+            if generation == assetGeneration {
+                parakeetReady = LocalASREngine(.parakeet).ready
+                preparingAssets = false; assetTask = nil
+            }
+        }
+    }
     func record() {
-        guard !busy else { return }; target = nil; dictating = false; beginRecording()
+        guard !busy else { return }; target = nil; dictating = false; captionVisible = false; beginRecording()
     }
     private func beginRecording() {
-        guard !busy else { return }; stopSpeaking(); reply = ""; let token = session.begin(); revision = UUID(); status = "Preparing microphone…"
+        guard !busy else { return }
+        preloader.release()
+        recordingAppID = target?.appID ?? ""; recordingAppName = target?.name ?? "Nero Voice draft"
+        recordingTone = personalization.tone(for: target?.appID, fallback: tone)
+        recordingTerms = dictionary; recordingSnippets = personalization.snippets
+        historyTicket = personalization.historyEnabled && !historyFault ? historyEpoch : nil; recordingHistoryID = nil
+        stopSpeaking(); stopLevelMeter(); captionFault = false; reply = ""; overlayText = nil; let token = session.begin(); revision = UUID(); status = "Preparing microphone…"
+        if !selectedModelReady {
+            cancel(); status = "Prepare the selected model on the Voice card before dictating."
+            return
+        }
         deadline?.cancel(); deadline = Task { [weak self] in try? await Task.sleep(for: .seconds(30)); guard !Task.isCancelled, self?.session.token == token, self?.session.phase == .preparing else { return }; self?.cancel(); self?.status = "Microphone preparation timed out. Try Record again." }
         work = Task { [self] in
             do {
@@ -173,44 +355,132 @@ import NookPluginSDK
                 try Task.checkCancellation(); guard session.token == token else { return }
                 guard allowed else { throw VoiceProblem.message("Allow Nero Voice in System Settings → Privacy & Security → Microphone.") }
                 let pipeline = SpeechPipeline(); self.pipeline = pipeline
-                try await pipeline.start(microphone: microphone.isEmpty ? nil : microphone, locale: locale, partial: { [weak self] text in
+                try await pipeline.start(microphone: microphone.isEmpty ? nil : microphone, locale: locale, provider: dictationASR, partial: { [weak self] text in
                     guard let self, self.session.token == token else { return }
                     do { try self.session.partial(text, token: token) } catch { self.fail(error.localizedDescription, token: token) }
                 }, failure: { [weak self] text in self?.fail(text, token: token) })
                 try Task.checkCancellation(); guard session.ready(token) else { pipeline.cancel(); return }
-                status = shortcutStyle == .hold ? "Listening · release shortcut or press Stop" : "Listening · press shortcut again to finish"
-                if sounds { NSSound(named: "Tink")?.play() }
+                startLevelMeter(token)
                 deadline?.cancel(); deadline = Task { [weak self] in try? await Task.sleep(for: .seconds(60)); guard !Task.isCancelled, self?.session.token == token else { return }; self?.stopRecording() }
+                if dictationASR == .nemotron {
+                    status = "Recording locally · preparing Nemotron…"
+                    let ready = Task { [self] in
+                        let stream = try LocalDictationStream(); localStream = stream
+                        try await stream.start(helper: Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/NeroASR"))
+                        return stream
+                    }
+                    localReady = ready
+                    let stream = try await ready.value
+                    try Task.checkCancellation(); guard session.token == token else { return }
+                    // Release may already be finalizing the captured audio. Do
+                    // not resume capture or start a second PCM writer afterward.
+                    guard session.phase == .listening else { return }
+                    stream.observe(audio: { [weak pipeline] in pipeline?.capturedSnapshot }, partial: { [weak self] text in
+                        guard let self, self.session.token == token else { return }
+                        do { try self.session.partial(text, token: token) } catch { self.fail(error.localizedDescription, token: token) }
+                    }, failure: { [weak self] text in self?.fail(text, token: token) })
+                }
+                status = dictationASR == .parakeet
+                    ? "Listening with Parakeet · release to transcribe"
+                    : (shortcutStyle == .hold ? "Listening · release shortcut or press Stop" : "Listening · press shortcut again to finish")
+                if sounds { NSSound(named: "Tink")?.play() }
             } catch { if session.token == token { fail(error.localizedDescription, token: token) } }
         }
     }
+    private func startLevelMeter(_ token: UUID) {
+        levelTask?.cancel()
+        levelTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.session.token == token, self.session.phase == .listening else { return }
+                let signal = self.pipeline?.inputSignal?.level ?? 0
+                self.inputLevel = min(1, max(0, self.inputLevel * 0.4 + signal * 0.6))
+                self.captionChanged?()
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+    }
+    private func stopLevelMeter() { levelTask?.cancel(); levelTask = nil; inputLevel = 0; captionChanged?() }
     func stopRecording() {
-        if session.phase == .preparing { cancel(); status = "Stopped before recording was ready"; return }
+        if session.phase == .preparing {
+            cancel(); status = "Released before the microphone was ready. Hold again and speak when REC appears."; return
+        }
+        stopLevelMeter()
         let token = session.token
         guard session.finishing(token), let pipeline else { return }
-        deadline?.cancel(); status = "Finishing your last words…"
-        deadline = Task { [weak self] in try? await Task.sleep(for: .seconds(12)); guard !Task.isCancelled, self?.session.token == token else { return }; self?.cancel(); self?.status = "Speech finalization timed out. Review the partial text before using it." }
+        deadline?.cancel(); status = dictationASR == .parakeet ? "Transcribing with local Parakeet…" : "Finishing your last words…"
+        let selectedProvider = dictationASR
+        deadline = Task { [weak self] in try? await Task.sleep(for: .seconds(selectedProvider != .apple ? 60 : 12)); guard !Task.isCancelled, self?.session.token == token else { return }; self?.cancel(); self?.status = "Speech finalization timed out. Review the partial text before using it." }
         work = Task { [self] in
             do {
-                let text = try await pipeline.finish()
+                let appleText = try await pipeline.finish()
+                let text: String
+                if selectedProvider == .nemotron {
+                    guard let pcm = pipeline.capturedAudio, let ready = localReady else { throw VoiceProblem.message("No local audio was captured.") }
+                    let stream = try await ready.value
+                    try Task.checkCancellation(); guard session.token == token else { return }
+                    text = try await stream.finish(pcm); localStream = nil; localReady = nil
+                } else if selectedProvider == .parakeet {
+                    guard let pcm = pipeline.capturedAudio else { throw VoiceProblem.message("No local audio was captured.") }
+                    let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/NeroASR")
+                    text = try await LocalASREngine(.parakeet).transcribeDictation(pcm, helper: helper)
+                } else { text = appleText }
                 try Task.checkCancellation(); guard session.token == token else { return }
                 try session.finish(text, token: token)
-                self.pipeline = nil; deadline?.cancel(); revision = UUID(); shortcutState.reset()
+                self.pipeline = nil; deadline?.cancel(); polishing = true
+                status = recordingTone == .literal ? "Preparing words…" : "Cleaning your words on this Mac…"
+                // FoundationModels may synchronously initialize a local model
+                // before its first suspension. Keep that work off the main
+                // actor so the plugin can continue servicing its heartbeat.
+                let selectedTone = recordingTone
+                let selectedDictionary = recordingTerms
+                let snippets = recordingSnippets
+                let polish = Task.detached(priority: .userInitiated) {
+                    let plan = try DictationSnippetPlan(raw: text, snippets: snippets)
+                    if let exact = plan.exactText { return exact }
+                    let cleaned = await VoicePolisher.polish(plan.prepared, tone: selectedTone, dictionary: selectedDictionary)
+                    return try plan.render(cleaned, fallback: VoiceCleanup.baseline(plan.prepared, tone: selectedTone, dictionary: selectedDictionary))
+                }
+                polishWork = polish
+                let cleaned = try await polish.value
+                if session.token == token { polishWork = nil }
+                try Task.checkCancellation(); guard session.token == token else { return }
+                try session.edit(cleaned)
+                recordingHistoryID = saveDictationHistory(raw: text, text: cleaned, tone: selectedTone, appID: recordingAppID, appName: recordingAppName, recognizer: selectedProvider.rawValue, ticket: historyTicket)
+                overlayText = cleaned; polishing = false; revision = UUID(); shortcutState.reset()
                 status = "Review your transcript · nothing sent"
                 if dictating, let target { finishDictation(into: target) }
             } catch { if session.token == token { fail(error.localizedDescription, token: token) } }
         }
     }
-    private func fail(_ message: String, token: UUID) { guard session.token == token else { return }; cancel(); status = message }
+    private func fail(_ message: String, token: UUID) {
+        guard session.token == token else { return }
+        let wasDictating = dictating
+        cancel(); status = message; captionFault = true
+        if wasDictating {
+            captionVisible = true; captionResult = true
+            scheduleOverlayDismissal(after: 8)
+            changed?()
+        }
+    }
     func cancel() {
+        cancelReference()
+        speaker.shutdown()
+        preloader.release()
+        stopLevelMeter(); captionFault = false
+        appPicker?.cancel(nil); appPicker = nil
+        draftPersonalizationWorker?.cancel(); draftPersonalizationTask?.cancel(); draftPersonalizationWorker = nil; draftPersonalizationTask = nil
+        historyTicket = nil
+        stopMeetingPlayback?()
         shortcutState.reset(); target = nil; dictating = false
-        insertionGeneration = UUID(); insertionWork?.cancel(); overlayCompletion?.cancel()
+        insertionGeneration = UUID(); insertionWork?.cancel(); overlayCompletion?.cancel(); overlayText = nil
+        polishWork?.cancel(); polishWork = nil
+        captionVisible = false; captionResult = false; polishing = false
         // An already sent paste cannot be recalled; retain busy until its clipboard lease ends.
         work?.cancel(); work = nil; deadline?.cancel(); deadline = nil
         assetGeneration = UUID(); assetTask?.cancel(); assetTask = nil; preparingAssets = false
-        pipeline?.cancel(); pipeline = nil; session.cancel(); revision = UUID()
+        localReady?.cancel(); localReady = nil; localStream?.cancel(); localStream = nil; pipeline?.cancel(); pipeline = nil; session.cancel(); revision = UUID()
         if let outgoing { cancelInvocation?(outgoing) }; outgoing = nil; outgoingEntry = nil; waiting = false
-        stopSpeaking(); status = "Stopped · review any partial text"
+        stopSpeaking(); status = "Stopped · review any partial text"; changed?()
     }
     func edit(_ text: String) { guard !busy else { return }; do { try session.edit(text); revision = UUID() } catch { status = error.localizedDescription } }
     func restore() { guard !busy else { return }; session.restore(); revision = UUID(); status = "Original transcript restored" }
@@ -249,20 +519,52 @@ import NookPluginSDK
         }
     }
     func speak() {
-        guard !busy, !reply.isEmpty else { return }; stopSpeaking()
-        let utterance = AVSpeechUtterance(string: reply)
-        utterance.voice = voiceID.isEmpty ? AVSpeechSynthesisVoice(language: locale) : AVSpeechSynthesisVoice(identifier: voiceID)
-        speaker.speak(utterance); speaking = true; status = "Reading reply aloud"
+        speakText(reply)
     }
-    func stopSpeaking() { speaker.stopSpeaking(at: .immediate); speaking = false }
+    func renderSpeech(_ text: String) throws {
+        try speaker.speak(text, backend: speechBackend, voiceID: voiceID, appleVoice: selectedSpeechVoice,
+                          qwenSpeaker: qwenSpeaker, locale: locale, delivery: speechDelivery, qwenOptions: qwenOptions)
+    }
+    func speakText(_ text: String) {
+        guard !busy, !CommandLine.arguments.contains("--protocol-test") else { return }
+        do { try renderSpeech(text) } catch { status = error.localizedDescription; changed?() }
+    }
+    func speakShared(_ text: String) throws {
+        guard !busy, !speaking, meetingActive?() != true, !CommandLine.arguments.contains("--protocol-test") else { throw VoiceProblem.message("Voice is busy. Finish the current activity first.") }
+        try renderSpeech(text)
+    }
+    func releaseSpeakingModel() { speaker.shutdown(); status = "Speaking model released · downloaded files retained"; changed?() }
+    func prepareQwen() {
+        guard !busy, !speaking, !CommandLine.arguments.contains("--protocol-test") else { return }
+        preloader.release(); preparingAssets = true; let id = UUID(); assetGeneration = id
+        status = "Preparing Qwen · download once, all speech stays local…"; changed?()
+        assetTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let model = try QwenModel(mode: qwenOptions.mode)
+                try await model.download { [weak self] done, total in Task { @MainActor in
+                    guard let self, self.assetGeneration == id, self.preparingAssets else { return }
+                    self.status = "Preparing Qwen · file \(done) of \(total)"; self.changed?()
+                } }
+                try Task.checkCancellation(); guard assetGeneration == id else { return }
+                try await speaker.prepareQwen(mode: qwenOptions.mode); try Task.checkCancellation(); guard assetGeneration == id else { return }
+                qwenReady = true; status = "Qwen ready · microphone off · releases after 60 idle seconds"
+            } catch { if assetGeneration == id { status = error.localizedDescription } }
+            guard assetGeneration == id else { return }; preparingAssets = false; assetTask = nil; changed?()
+        }
+    }
+    func readDraft() { speakText(session.transcript) }
+    func previewSpeech() { speakText("Welcome back. We have time to review your notes, or we can pick up right where we left off. What would you like to do?") }
+    func stopSpeaking() { speaker.stop(); speaking = false }
     func refreshSpeechState() {
+        if Date().timeIntervalSince(historyLastRefresh) > 60 && !busy { refreshHistory() }
         accessibilityAllowed = insertion.permitted
+        if session.phase == .listening, let error = pipeline?.inputError { fail(error, token: session.token); return }
         if session.phase == .listening, let signal = pipeline?.inputSignal {
             if signal.age > 3 { fail("The microphone stopped delivering audio. Choose a microphone in Voice settings and try again.", token: session.token); return }
             let device = microphones.first { microphone.isEmpty ? $0.isDefault : $0.id == microphone }?.name ?? "Microphone"
-            status = "Listening · \(device) · input \(Int(signal.level * 100))%"
+            status = "\(dictationASR == .parakeet ? "Listening with Parakeet" : "Listening") · \(device) · input \(Int(signal.level * 100))%"
         }
-        if speaking && !speaker.isSpeaking { speaking = false; status = "Reply ready" }
     }
-    func shutdown() { cancel(); insertion.shutdown(); overlay.hide(); hotkey.stop(); lifecycleObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) } }
+    func shutdown() { cancel(); discardReferenceSource(); speaker.shutdown(); insertion.shutdown(); overlay.hide(); hotkey.stop(); lifecycleObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) } }
 }

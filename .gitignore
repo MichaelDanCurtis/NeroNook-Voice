@@ -4,3 +4,13 @@ build/
 .DS_Store
 __pycache__/
 *.log
+
+reports/
+.serena/
+node_modules/
+*.app/
+*.dSYM/
+*.xcarchive/
+.env
+.env.*
+!.env.example

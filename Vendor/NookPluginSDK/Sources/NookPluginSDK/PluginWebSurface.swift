@@ -3,6 +3,7 @@ import WebKit
 
 /// Same custom view renderer for a host stage or a plugin-owned standalone window.
 public struct PluginWebSurface: NSViewRepresentable {
+    @Environment(\.pluginAppearance) private var appearance
     public let root: URL
     public let panelID: String
     public let definition: PluginCustomView
@@ -18,6 +19,7 @@ public struct PluginWebSurface: NSViewRepresentable {
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         configuration.setURLSchemeHandler(context.coordinator, forURLScheme: PluginViewResources.scheme)
         configuration.userContentController.addScriptMessageHandler(context.coordinator, contentWorld: .page, name: "neroView")
+        configuration.userContentController.addScriptMessageHandler(context.coordinator, contentWorld: .page, name: "neroAvatarPresence")
         configuration.userContentController.addUserScript(.init(source: Self.bridge, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         let web = WKWebView(frame: .zero, configuration: configuration)
         web.navigationDelegate = context.coordinator; web.uiDelegate = context.coordinator
@@ -31,9 +33,11 @@ public struct PluginWebSurface: NSViewRepresentable {
         if previous.root != root || previous.panelID != panelID || previous.definition.entry != definition.entry || previous.definition.revision != definition.revision || previous.definition.frames != definition.frames {
             context.coordinator.load(web)
         } else if previous.definition.state != definition.state { context.coordinator.update(web) }
+        context.coordinator.updateAppearance(web)
     }
     public static func dismantleNSView(_ web: WKWebView, coordinator: Coordinator) {
         coordinator.active = false; coordinator.cancelResources(); web.stopLoading()
+        coordinator.stopPointer()
         web.configuration.userContentController.removeAllScriptMessageHandlers()
         web.navigationDelegate = nil; web.uiDelegate = nil
     }
@@ -43,6 +47,8 @@ public struct PluginWebSurface: NSViewRepresentable {
       Object.defineProperty(window, '__neroReceive', { value: value => { state = Object.freeze(value); for (const f of listeners) { try { f(state); } catch (_) {} } } });
       Object.defineProperty(window, 'nero', { value: Object.freeze({
         get state() { return state; },
+        get appearance() { return window.__neroAppearanceAPI.current; },
+        onAppearance(callback) { return window.__neroAppearanceAPI.onChange(callback); },
         onState(callback) { listeners.add(callback); callback(state); return () => listeners.delete(callback); },
         emit(name, values = {}) { return window.webkit.messageHandlers.neroView.postMessage({name, values}); }
       }) });
@@ -52,6 +58,9 @@ public struct PluginWebSurface: NSViewRepresentable {
         var owner: PluginWebSurface
         var active = true
         private var loaded = false
+        private var appearanceDocument = UUID().uuidString
+        private var appearanceSerial = 0
+        private var lastAppearance: PluginAppearanceContext?
         private var eventsAt = Date.distantPast
         private var eventCount = 0
         private var assetRequests = 0
@@ -61,25 +70,77 @@ public struct PluginWebSurface: NSViewRepresentable {
         private var resourceWindow = Date()
         private var resourceCount = 0
         private var resourceBytes = 0
+        private let pointer = PluginAvatarPointerSource()
+        private var pointerBusy=false, pointerPending=false
+        private var pointerSample: PluginAvatarPointerSource.Sample?
+        private var pointerEpoch=0
+        func stopPointer() { pointer.stop(); pointerEpoch += 1; pointerBusy=false; pointerPending=false; pointerSample=nil }
+        private func trackPointer(_ web: WKWebView, enabled: Bool) {
+            guard active, loaded else { return }
+            if enabled && !owner.appearance.reduceMotion {
+                pointer.start(view:web) { [weak self,weak web] sample in
+                    guard let self,let web,self.active,self.loaded else { return }
+                    self.pointerSample=sample;self.pointerPending=true;self.flushPointer(web)
+                }
+            } else {
+                pointer.stop();pointerSample=nil;pointerPending=true;flushPointer(web)
+            }
+        }
+        private func flushPointer(_ web: WKWebView) {
+            guard active,loaded,!pointerBusy,pointerPending else { return }
+            let sample:Any=pointerSample.map { $0.values as Any } ?? NSNull()
+            pointerPending=false;pointerBusy=true;let epoch=pointerEpoch
+            Task { @MainActor [weak self,weak web] in
+                guard let self,let web,self.active,self.loaded,self.pointerEpoch==epoch else { return }
+                _ = try? await web.callAsyncJavaScript("window.NookAvatar?.pointer(sample)",arguments:["sample":sample],in:nil,contentWorld:.page)
+                guard self.active,self.pointerEpoch==epoch else { return }
+                self.pointerBusy=false;self.flushPointer(web)
+            }
+        }
         func cancelResources() { let tasks = resourceTasks.values; resourceTasks.removeAll(); for task in tasks { task.cancel() } }
         init(_ owner: PluginWebSurface) { self.owner = owner }
         func load(_ web: WKWebView) {
-            cancelResources(); loaded = false; active = true; assetRequests = 0; assetBytes = 0
+            cancelResources(); stopPointer(); loaded = false; active = true; assetRequests = 0; assetBytes = 0
+            appearanceDocument=UUID().uuidString; appearanceSerial=0; lastAppearance=nil
             do {
                 try owner.definition.validate()
+                let scripts = web.configuration.userContentController
+                scripts.removeAllUserScripts()
+                scripts.addUserScript(.init(source: try PluginThemeWeb.bootstrap(owner.appearance, documentID:appearanceDocument), injectionTime: .atDocumentStart, forMainFrameOnly: true))
+                scripts.addUserScript(.init(source: PluginWebSurface.bridge, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+                scripts.addUserScript(.init(source: PluginInterfaceWeb.bootstrap, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
                 _ = try PluginViewResources.file(owner.definition.entry, root: owner.root)
                 web.load(URLRequest(url: URL(string: "\(PluginViewResources.scheme)://surface/\(owner.definition.entry)")!))
             } catch { showError(web) }
         }
         private func showError(_ web: WKWebView) {
-            loaded = false
+            stopPointer(); loaded = false
             web.loadHTMLString("<html><body style='background:#19191f;color:#ddd;font:14px system-ui;padding:24px'>This plugin view could not load. Open its settings or restart the module.</body></html>", baseURL: nil)
         }
         func update(_ web: WKWebView) {
             guard loaded, active, let data = try? JSONEncoder().encode(owner.definition.state), let values = try? JSONSerialization.jsonObject(with: data) else { return }
             Task { @MainActor in _ = try? await web.callAsyncJavaScript("window.__neroReceive(state)", arguments: ["state": values], in: nil, contentWorld: .page) }
         }
-        public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { loaded = webView.url?.scheme == PluginViewResources.scheme; update(webView) }
+        func updateAppearance(_ web: WKWebView) {
+            guard loaded, active, lastAppearance != owner.appearance, let data = try? JSONEncoder().encode(owner.appearance), let value = try? JSONSerialization.jsonObject(with: data) else { return }
+            lastAppearance=owner.appearance; appearanceSerial += 1
+            if owner.appearance.reduceMotion { trackPointer(web,enabled:false) }
+            let serial=appearanceSerial, document=appearanceDocument
+            Task { @MainActor [weak self] in
+                guard let self, self.active, self.appearanceDocument == document else { return }
+                _ = try? await web.callAsyncJavaScript("window.__neroAppearanceReceive(appearance, serial, document)", arguments: ["appearance": value,"serial":serial,"document":document], in: nil, contentWorld: .page)
+            }
+        }
+        public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            loaded = webView.url?.scheme == PluginViewResources.scheme; updateAppearance(webView); update(webView)
+            let epoch=pointerEpoch
+            Task { @MainActor [weak self,weak webView] in
+                guard let self,let webView,self.active,self.loaded else { return }
+                let wants = try? await webView.callAsyncJavaScript("return window.NookAvatar?.wantsPointer === true",arguments:[:],in:nil,contentWorld:.page)
+                guard self.active,self.loaded,self.pointerEpoch==epoch else { return }
+                self.trackPointer(webView,enabled:(wants as? Bool)==true)
+            }
+        }
         public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { showError(webView) }
         public func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { if webView.url?.scheme != "about" { showError(webView) } }
         public func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
@@ -97,6 +158,14 @@ public struct PluginWebSurface: NSViewRepresentable {
                 guard active, let url = urlSchemeTask.request.url, url.scheme == PluginViewResources.scheme, url.host == "surface", url.user == nil, url.password == nil,
                       urlSchemeTask.request.httpMethod == "GET" else { throw ModuleProblem("Invalid resource request.") }
                 guard url.query == nil, url.fragment == nil, url.port == nil else { throw ModuleProblem("Invalid resource URL.") }
+                if url.path.hasPrefix("/__nook_sdk__/") {
+                    guard assetRequests < 512, assetBytes < 32 * 1024 * 1024,
+                          let data = PluginVisualAssets.data(path: url.path) else { throw ModuleProblem("Unknown SDK asset.") }
+                    assetRequests += 1; assetBytes += data.count
+                    let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": PluginVisualAssets.mime(path:url.path), "X-Content-Type-Options": "nosniff", "Cache-Control": "max-age=86400"])!
+                    urlSchemeTask.didReceive(response); urlSchemeTask.didReceive(data); urlSchemeTask.didFinish()
+                    return
+                }
                 if url.path.hasPrefix("/_plugin/") {
                     let request = PluginViewResourceRequest(panelID: owner.panelID, revision: owner.definition.revision, path: String(url.path.dropFirst(9)))
                     try owner.definition.validate(request)
@@ -135,7 +204,7 @@ public struct PluginWebSurface: NSViewRepresentable {
                 guard assetBytes <= 32 * 1024 * 1024 else { throw ModuleProblem("View resource budget exceeded.") }
                 let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: [
                     "Content-Type": PluginViewResources.mime(file.pathExtension)! + (file.pathExtension == "html" ? "; charset=utf-8" : ""),
-                    "Content-Security-Policy": "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; frame-src \((owner.definition.frames ?? []).isEmpty ? "'none'" : (owner.definition.frames ?? []).map(\.origin).joined(separator: " ")); object-src 'none'; base-uri 'none'; form-action 'none'; worker-src 'none'",
+                    "Content-Security-Policy": "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src data:; frame-src \((owner.definition.frames ?? []).isEmpty ? "'none'" : (owner.definition.frames ?? []).map(\.origin).joined(separator: " ")); object-src 'none'; base-uri 'none'; form-action 'none'; worker-src 'none'",
                     "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"
                 ])!
                 urlSchemeTask.didReceive(response); urlSchemeTask.didReceive(data); urlSchemeTask.didFinish()
@@ -143,6 +212,16 @@ public struct PluginWebSurface: NSViewRepresentable {
         }
         public func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) { resourceTasks.removeValue(forKey: ObjectIdentifier(urlSchemeTask))?.cancel() }
         public func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage, replyHandler: @escaping @MainActor (Any?, String?) -> Void) {
+            if message.name == "neroAvatarPresence" {
+                guard active,loaded,message.frameInfo.isMainFrame,
+                      message.frameInfo.request.url?.scheme == PluginViewResources.scheme,
+                      message.frameInfo.request.url?.host == "surface",
+                      let body=message.body as? [String:Any],Set(body.keys)==Set(["active"]),
+                      let enabled=body["active"] as? Bool,let web=message.webView else {
+                    replyHandler(nil,"Avatar surface is unavailable.");return
+                }
+                trackPointer(web,enabled:enabled);replyHandler(["accepted":true],nil);return
+            }
             do {
                 guard active, loaded, message.frameInfo.isMainFrame, message.frameInfo.request.url?.scheme == PluginViewResources.scheme,
                       message.frameInfo.request.url?.host == "surface", let body = message.body as? [String: Any],

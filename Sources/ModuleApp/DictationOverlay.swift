@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import NookPluginSDK
 
 private final class DictationPanel: NSPanel {
     override var canBecomeKey: Bool { false }
@@ -14,7 +15,7 @@ private final class DictationPanel: NSPanel {
             p.isOpaque = false; p.backgroundColor = .clear; p.hasShadow = true
             p.level = .floating; p.hidesOnDeactivate = false
             p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-            p.contentView = NSHostingView(rootView: DictationOverlayView(model: model))
+            p.contentView = NSHostingView(rootView: DictationOverlayView(model: model).pluginThemed(background:false))
             panel = p
         }
         guard let panel else { return }
@@ -30,31 +31,31 @@ private final class DictationPanel: NSPanel {
 }
 
 private struct DictationOverlayView: View {
+    @Environment(\.pluginAppearance) private var appearance
     @ObservedObject var model: VoiceModel
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Image(systemName: model.session.phase == .listening ? "waveform" : "mic.fill").foregroundStyle(.mint)
+                Image(systemName: model.session.phase == .listening ? "waveform" : "mic.fill").foregroundStyle(Color(pluginHex: appearance.palette.accent))
                 Text(model.session.recording ? "Dictating to \(model.targetName)" : "Nero Voice").font(.callout.bold())
                 Spacer()
                 if model.busy { ProgressView().controlSize(.small) }
                 Button { model.dismissOverlay() } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel("Dismiss dictation")
             }
-            Text(model.status).font(.caption).foregroundStyle(.secondary).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
-            Text(model.session.transcript.isEmpty ? "Your words will appear here" : model.session.transcript)
+            Text(model.status).font(.caption).pluginSecondaryText().lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
+            Text(model.overlayText ?? (model.session.transcript.isEmpty ? "Your words will appear here" : model.session.transcript))
                 .font(.callout).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
             HStack {
                 if model.session.recording || model.inserting {
                     Button("Stop") { model.stopRecording() }.disabled(!model.session.recording || model.session.phase == .finishing)
                     Button("Cancel") { model.cancel() }
                 } else {
-                    Button("Review words") { model.dismissOverlay(); model.reveal?() }
-                    Button("Undo insertion") { model.undoInsertion() }.disabled(!model.canUndoInsertion || model.busy)
+                    Button("Open Voice") { model.dismissOverlay(); model.reveal?() }
                 }
                 Spacer()
-                Text("ON DEVICE").font(.system(size: 9, weight: .semibold)).foregroundStyle(.mint)
+                Text("ON DEVICE").font(.system(size: 9, weight: .semibold)).foregroundStyle(Color(pluginHex: appearance.palette.accent))
             }.font(.caption)
-        }.padding(16).frame(width: 420, height: 154).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
-            .overlay(RoundedRectangle(cornerRadius: 18).stroke(.white.opacity(0.12))).preferredColorScheme(.dark).tint(.mint)
+        }.padding(16).frame(width: 420, height: 154).background(Color(pluginHex: appearance.palette.surface), in: RoundedRectangle(cornerRadius: 18))
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.primary.opacity(0.12)))
     }
 }

@@ -3,6 +3,33 @@ import XCTest
 import NookPluginSDK
 
 final class VoiceTests: XCTestCase {
+    func testRecordedShortcutValidationAndLegacyMigration() {
+        XCTAssertEqual(DictationShortcut.standard.displayName, "Fn")
+        XCTAssertEqual(DictationShortcut.fromLegacy("⌃⌥Space")?.displayName, "⌃⌥Space")
+        XCTAssertEqual(DictationShortcut.fromLegacy("⌃⇧V")?.displayName, "⌃⇧V")
+        XCTAssertNil(DictationShortcut.fromLegacy("Off"))
+        XCTAssertTrue(DictationShortcut(keyCode: 9, modifiers: 4096, keyLabel: "V").valid)
+        XCTAssertTrue(DictationShortcut(keyCode: 53, modifiers: 4096 | 2048, keyLabel: "Esc").valid)
+        XCTAssertTrue(DictationShortcut(keyCode: 49, modifiers: 4096 | 2048, keyLabel: "Space").valid)
+    }
+    func testDictationCleanupKeepsExplicitCorrectionAndQuestion() {
+        XCTAssertEqual(VoiceCleanup.baseline("How are we doings, I mean how are YOU doing", tone: .clean), "How are you doing?")
+        XCTAssertEqual(VoiceCleanup.baseline("How are we doing? I mean, how are you doing?", tone: .clean), "How are you doing?")
+        XCTAssertEqual(VoiceCleanup.baseline("Um, I I need this today", tone: .clean), "I need this today.")
+    }
+
+    func testAmbiguousCorrectionAndLiteralModeAreConservative() {
+        XCTAssertEqual(VoiceCleanup.baseline("Tell Mary, I mean Sarah, that I'll be late", tone: .clean), "Tell Mary, I mean Sarah, that I'll be late.")
+        XCTAssertEqual(VoiceCleanup.baseline("  um I I need this today  ", tone: .literal), "um I I need this today")
+    }
+    func testRatherPreferencesNeverDeleteTheBeginningOfDictation() {
+        for tone in [DictationTone.clean, .formal] {
+            XCTAssertEqual(VoiceCleanup.baseline("I would rather you send the invoice tomorrow", tone: tone), "I would rather you send the invoice tomorrow.")
+            XCTAssertEqual(VoiceCleanup.baseline("I would rather we wait until Friday", tone: tone), "I would rather we wait until Friday.")
+            XCTAssertEqual(VoiceCleanup.baseline("Rather than cancel, we should reschedule", tone: tone), "Rather than cancel, we should reschedule.")
+        }
+        XCTAssertEqual(VoiceCleanup.baseline("Please send it today, scratch that please send it tomorrow", tone: .clean), "Please send it tomorrow.")
+    }
     func testCancelledPreparationCannotOpenLater() {
         var s = VoiceSession(); let old = s.begin(); s.cancel()
         XCTAssertFalse(s.ready(old)); XCTAssertFalse(s.recording)

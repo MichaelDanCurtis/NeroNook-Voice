@@ -16,7 +16,7 @@ import time
 import uuid
 
 HERE = Path(__file__).resolve().parent
-FEATURES = ['dashboard-v1', 'panels-v1', 'control-cards-v1', 'actions-v1', 'forms-v1']
+FEATURES = ['dashboard-v1', 'panels-v1', 'control-cards-v1', 'actions-v1', 'forms-v1', 'transient-caption-v1', 'custom-views-v1']
 MAX_LINE = 128 * 1024
 
 class Problem(Exception):
@@ -61,6 +61,8 @@ def package(project, binaries, value, identity='-'):
         (app/'Contents/MacOS').mkdir(parents=True)
         (app/'Contents/Resources').mkdir()
         shutil.copy2(binaries/'ModuleApp', app/'Contents/MacOS/ModuleApp')
+        sdk_assets = binaries/'NookPluginSDK_NookPluginSDK.bundle'
+        if sdk_assets.exists(): shutil.copytree(sdk_assets, app/'Contents/Resources'/sdk_assets.name)
         shutil.copy2(project/'Resources/NookPlugin.json', app/'Contents/Resources/NookPlugin.json')
         info = dict(CFBundleName=value['name'], CFBundleDisplayName=value['name'], CFBundleIdentifier=value['id'],
                     CFBundleExecutable='ModuleApp', CFBundlePackageType='APPL', CFBundleShortVersionString=value['version'],
@@ -117,12 +119,12 @@ def protocol_test(project, app, binaries, value, features, replay=None):
     process = subprocess.Popen([str(a) for a in arguments], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=environment)
     selector = selectors.DefaultSelector(); selector.register(process.stdout, selectors.EVENT_READ)
     expected_replay = json.loads(replay.read_text()) if replay else None
-    session = str(uuid.uuid4()); buffer = b''; sequence = -1; snapshots = 0; messages = 0; deadline = time.monotonic()+12
+    session = str(uuid.uuid4()); buffer = b''; sequence = -1; snapshots = 0; heartbeats = 0; messages = 0; deadline = time.monotonic()+12
     def send(kind, **fields):
         process.stdin.write((json.dumps(dict(apiVersion=1,type=kind,pluginID=value['id'],session=session,sequence=0,**fields))+'\n').encode());process.stdin.flush()
     try:
         send('hello',features=features)
-        while snapshots < 3 and time.monotonic()<deadline:
+        while (snapshots < 3 or heartbeats < 1) and time.monotonic()<deadline:
             if not selector.select(0.25):
                 if process.poll() is not None: raise Problem('Module exited before completing the handshake and timed snapshots.')
                 continue
@@ -139,19 +141,24 @@ def protocol_test(project, app, binaries, value, features, replay=None):
                 if not isinstance(current,int) or current<=sequence: raise Problem('Module sequence repeated or moved backward.')
                 if sequence==-1 and (message.get('type')!='ready' or current!=0): raise Problem('First message must be ready at sequence zero.')
                 sequence=current
+                if message.get('type')=='heartbeat': heartbeats+=1
                 if message.get('type')=='snapshot':
+                    if value['id']=='cafe.nero.plugin.voice' and 'custom-views-v1' in features:
+                        panels={p['id']:p for p in message['snapshot'].get('panels',[])}
+                        if not all(panels.get(p,{}).get('customView') for p in ['voice','meetings']):
+                            raise Problem('Voice must publish both custom views, not its fallback error card.')
                     if expected_replay:
                         expected = expected_replay[min(snapshots,len(expected_replay)-1)]
                         if message['snapshot']['status'] != expected['message'] or message['snapshot']['badge'] != ('Demo' if expected['available'] else 'Offline'):
                             raise Problem('Starter replay did not produce the expected ordered status/availability.')
                     snapshots+=1
             if len(buffer)>MAX_LINE: raise Problem('Unterminated protocol output exceeded its limit.')
-        if snapshots<3: raise Problem('Timed snapshots did not arrive before the deadline.')
+        if snapshots<3 or heartbeats<1: raise Problem('Timed snapshots or background heartbeat did not arrive before the deadline.')
         process.stdin.close()
         try: process.wait(timeout=3)
         except subprocess.TimeoutExpired: raise Problem('Hosted module did not exit after its connection closed.')
-        if process.returncode!=0: raise Problem('Module exited abnormally after connection closure.')
-        print('PASS: '+('modern' if features else 'legacy')+' handshake, SDK validation, three snapshots and clean EOF. No actions invoked.')
+        if process.returncode!=0: raise Problem(f'Module exited abnormally after connection closure ({process.returncode}).')
+        print('PASS: '+('modern' if features else 'legacy')+' handshake, SDK validation, three snapshots, background heartbeat and clean EOF. No actions invoked.')
     finally:
         selector.close()
         if process.poll() is None:

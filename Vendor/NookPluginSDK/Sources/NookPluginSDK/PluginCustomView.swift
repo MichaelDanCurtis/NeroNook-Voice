@@ -15,8 +15,11 @@ public struct PluginCustomView: Codable, Equatable, Sendable {
     public var resourceNamespaces: [String]?
     /// Exact isolated loopback or HTTPS documents. Never host tools; HTTPS requires separate negotiation.
     public var frames: [PluginViewFrame]?
-    public init(entry: String, revision: String, state: [String: PluginValue] = [:], events: [PluginViewEventDefinition] = [], resourceNamespaces: [String]? = nil, frames: [PluginViewFrame]? = nil) {
+    /// The view supplies its own title/navigation. Hosts may omit a duplicate header.
+    public var ownsChrome: Bool?
+    public init(entry: String, revision: String, state: [String: PluginValue] = [:], events: [PluginViewEventDefinition] = [], resourceNamespaces: [String]? = nil, frames: [PluginViewFrame]? = nil, ownsChrome: Bool? = nil) {
         self.entry = entry; self.revision = revision; self.state = state; self.events = events; self.resourceNamespaces = resourceNamespaces; self.frames = frames
+        self.ownsChrome = ownsChrome
     }
     public func validate() throws {
         guard PluginViewResources.validPath(entry), entry.hasSuffix(".html"), ModulePackage.validKey(revision),

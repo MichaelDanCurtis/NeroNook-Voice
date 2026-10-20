@@ -30,14 +30,18 @@ public enum MeetingTranscription {
         try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
     }
     @MainActor public static func transcribe(_ url: URL, track: String, locale: String, result: @escaping @MainActor (MeetingUtterance) throws -> Void) async throws {
-        let transcriber = try await SpeechPipeline.prepare(localeIdentifier: locale, install: false)
+        let transcriber = try await SpeechPipeline.prepare(localeIdentifier: locale, install: false, wordTiming: true)
         let file = try AVAudioFile(forReading: url)
         let analyzer = SpeechAnalyzer(modules: [transcriber])
         let task = Task { @MainActor in
             for try await value in transcriber.results where value.isFinal {
                 try Task.checkCancellation(); let start = value.range.start.seconds; let end = CMTimeRangeGetEnd(value.range).seconds
                 let text = String(value.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
-                if !text.isEmpty { try result(MeetingUtterance(start: start, end: end, track: track, text: text)) }
+                if !text.isEmpty {
+                    var line = MeetingUtterance(start: start, end: end, track: track, text: text)
+                    line.words = MeetingTimedText.words(value.text, start: start, end: end)
+                    try result(line)
+                }
             }
         }
         try await withTaskCancellationHandler {

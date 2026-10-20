@@ -37,6 +37,9 @@ public struct VoiceSession: Sendable {
     }
     public mutating func cancel() { token = UUID(); phase = transcript.isEmpty ? .idle : .review }
     public mutating func edit(_ text: String) throws { try Self.validate(text, allowEmpty: true); transcript = text }
+    public mutating func loadDraft(raw: String, text: String) throws {
+        try Self.validate(raw); try Self.validate(text); token = UUID(); self.raw = raw; transcript = text; phase = .review
+    }
     public mutating func restore() { transcript = raw }
     public mutating func clear() { token = UUID(); phase = .idle; transcript = ""; raw = "" }
     public static func validate(_ text: String, allowEmpty: Bool = false) throws {

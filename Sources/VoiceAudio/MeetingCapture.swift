@@ -11,26 +11,17 @@ public struct MeetingAudioSource: Identifiable, Equatable, Sendable {
     public init(id: String, name: String) { self.id = id; self.name = name }
 }
 public enum MeetingSources {
-    private static func objects() -> [AudioObjectID] {
-        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList, mScope: kAudioObjectPropertyScopeGlobal, mElement: 0)
-        var size: UInt32 = 0
-        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size) == noErr, size < 65536 else { return [] }
-        var values = [AudioObjectID](repeating: 0, count: Int(size) / 4)
-        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &values) == noErr else { return [] }; return values
-    }
-    private static func bundle(_ id: AudioObjectID) -> String? {
-        var address = AudioObjectPropertyAddress(mSelector: kAudioProcessPropertyBundleID, mScope: kAudioObjectPropertyScopeGlobal, mElement: 0)
-        var value: CFString?; var size = UInt32(MemoryLayout<CFString?>.size)
-        let result = withUnsafeMutablePointer(to: &value) { AudioObjectGetPropertyData(id, &address, 0, nil, &size, $0) }
-        guard result == noErr else { return nil }; return value as String?
-    }
     public static func available() -> [MeetingAudioSource] {
-        let bundles = Set(objects().compactMap(bundle).filter { !$0.isEmpty && $0 != "cafe.nero.plugin.voice" })
-        return bundles.sorted().map { MeetingAudioSource(id: $0, name: $0.split(separator: ".").last.map(String.init) ?? $0) }
+        var owners: [String: String] = [:]
+        for process in MeetingProcessActivities.snapshot() where !process.appBundle.isEmpty && process.appBundle != "cafe.nero.plugin.voice" {
+            owners[process.appBundle] = process.appName
+        }
+        return owners.map { MeetingAudioSource(id: $0.key, name: $0.value) }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
     static func processIDs(_ source: String) -> [AudioObjectID] {
-        objects().filter { bundle($0) == source }
+        MeetingProcessActivities.snapshot().filter { $0.appBundle == source || $0.bundle == source }.map(\.object)
     }
+
 }
 
 private final class MeetingSystemTap: @unchecked Sendable {
@@ -93,8 +84,12 @@ private final class MeetingSystemTap: @unchecked Sendable {
             if includeMicrophone {
                 let engine = AVAudioEngine(); self.engine = engine
                 guard var device = MicrophoneDeviceService.deviceID(for: microphone), let unit = engine.inputNode.audioUnit else { throw VoiceProblem.message("Selected microphone is unavailable") }
-                let result = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &device, UInt32(MemoryLayout.size(ofValue: device)))
-                guard result == noErr else { throw VoiceProblem.message("Cannot select microphone") }
+                var current = AudioDeviceID(0), size = UInt32(MemoryLayout<AudioDeviceID>.size)
+                let read = AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &current, &size)
+                if read != noErr || current != device {
+                    let result = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &device, UInt32(MemoryLayout.size(ofValue: device)))
+                    guard result == noErr else { throw VoiceProblem.message("Cannot select microphone") }
+                }
                 let format = engine.inputNode.inputFormat(forBus: 0)
                 guard format.sampleRate >= 8000, format.sampleRate <= 192000, format.channelCount > 0, format.channelCount <= 8 else { throw VoiceProblem.message("Microphone format unavailable") }
                 engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, time in

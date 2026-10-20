@@ -37,7 +37,7 @@ public enum MicrophoneDeviceService {
     public static func deviceID(for uid: String?) -> AudioDeviceID? {
         guard let uid else { return defaultInputDeviceID() }
         return allDeviceIDs().first { deviceID in
-            stringProperty(deviceID, selector: kAudioDevicePropertyDeviceUID) == uid
+            hasInputChannels(deviceID) && stringProperty(deviceID, selector: kAudioDevicePropertyDeviceUID) == uid
         }
     }
 
