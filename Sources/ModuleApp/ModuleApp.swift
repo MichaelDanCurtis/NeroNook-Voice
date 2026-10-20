@@ -216,10 +216,11 @@ import NookPluginSDK
         let status = meetings.occupied ? meetings.status : model.status
         // Custom panels already expose their own recording and stop controls.
         // Keep the host action row only for the older declarative fallback.
-        let snapshot = PluginSnapshot(title: "Nero Voice", status: String(status.prefix(200)), activity: String(status.prefix(100)), actions: customViews ? [] : actions, badge: meetings.active ? "Meeting" : model.session.phase == .listening ? "Recording" : "On-device", panels: [
+        var snapshot = PluginSnapshot(title: "Nero Voice", status: String(status.prefix(200)), activity: String(status.prefix(100)), actions: customViews ? [] : actions, badge: meetings.active ? "Meeting" : model.session.phase == .listening ? "Recording" : "On-device", panels: [
             customViews ? .init("voice", "Dictate", customView: model.voiceDefinition) : .init("voice", "Dictate", sections: sections, forms: model.session.recording ? nil : [form]),
             customViews ? .init("meetings", "Meetings", customView: meetings.definition) : .init("meetings", "Meetings", sections: [.init("Meeting recordings", "Open Nero Voice for meeting recording, bookmarks and playback.")])
         ])
+        snapshot.avatarInteractionBusy = model.busy || model.speaking || conversation.active || meetings.occupied || meetings.playing
         do { try snapshot.validate(); emit("snapshot", snapshot: snapshot) }
         catch { emit("snapshot", snapshot: PluginSnapshot(title: "Nero Voice", status: "Voice view unavailable. Open settings or stop the current activity.", actions: [.init("cancel", "Stop activity", enabled: true, symbol: "stop.fill")], sections: [.init("Display issue", String(error.localizedDescription.prefix(200)))])) }
         publishCaption()
