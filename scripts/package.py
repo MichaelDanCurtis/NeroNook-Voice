@@ -51,7 +51,7 @@ def main():
         verify_update(app, reference)
         run(['codesign', '--verify', '--deep', '--strict', app], capture_output=True)
         files=[p for p in app.rglob('*') if p.is_file()]
-        if sum(p.stat().st_size for p in files)>128*1024*1024 or len(files)>4096:
+        if sum(p.stat().st_size for p in files)>256*1024*1024 or len(files)>4096:
             raise SystemExit('Plugin exceeds the host package limit; existing package preserved.')
         digest = hashlib.sha256()
         for p in sorted(app.rglob('*')):

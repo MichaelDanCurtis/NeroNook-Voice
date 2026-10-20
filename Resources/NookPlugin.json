@@ -1,7 +1,7 @@
 {
   "id": "cafe.nero.plugin.voice",
   "name": "Nero Voice",
-  "version": "0.21.8",
+  "version": "0.21.9",
   "apiVersion": 1,
   "summary": "Local dictation with app styles, spoken snippets and opt-in history; organized meeting recordings and cited notes.",
   "capabilities": [
