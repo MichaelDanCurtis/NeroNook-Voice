@@ -18,6 +18,8 @@ import NookPluginSDK
     private var mode: String { duplex.mode.rawValue }
     private var listening: Bool { duplex.listening }
     private var playing = false, turn = 0
+    private var expressionAdmission = PluginExpressionAdmission()
+    private var expressionSegment: PluginExpressionSegment?
     private var gate = ConversationTurn()
     private var interruption = ConversationInterruption()
     private var pendingRecognition: MeetingLiveUpdate?
@@ -41,6 +43,7 @@ import NookPluginSDK
         guard case .string(let requested)=values["mode"] else {throw VoiceProblem.message("Choose a duplex mode")}
         let mode = try PluginSpeechConversation.mode(requested);self.preferences=preferences
         duplex = ConversationDuplexState(mode: mode == "full" ? .full : .half)
+        expressionAdmission = .init(); expressionSegment = nil
         active=true;request=id;epoch=UUID();sequence=0;inputSequence=0;turn=0;gate=ConversationTurn(pace:preferences.conversationPace);peak=0;recognized=false
         interruption = ConversationInterruption(sensitivity: preferences.interruptionSensitivity); pendingRecognition = nil
         let token=epoch;started=Date();heartbeat=Date();status="Preparing local conversation…";changed?()
@@ -64,8 +67,8 @@ import NookPluginSDK
                 else if preferences.voiceID == AppleSpeechOutput.voice2Identifier { try speaker.prepareVoice2() }
                 speaker.changed={ [weak self] phase,error in guard let self,self.active,self.epoch==token else{return}
                     if let error{self.stop(error,failed:true);return}
-                    if phase == .speaking{SpeechTiming.mark("playbackStarted",turn:self.turn);self.duplex.phase = .speaking;self.status="Speaking";self.emit("speaking",turn:self.turn)}
-                    if phase == .finished{self.interruption.endPlayback(at:self.audio?.signal.time ?? 0);self.playing=false;self.duplex.phase = .thinking;self.emit("played",turn:self.turn)}
+                    if phase == .speaking{if let segment = self.expressionSegment { self.emit("expressionStarted",text:segment.receipt.encoded(),turn:self.turn) };SpeechTiming.mark("playbackStarted",turn:self.turn);self.duplex.phase = .speaking;self.status="Speaking";self.emit("speaking",turn:self.turn)}
+                    if phase == .finished{self.interruption.endPlayback(at:self.audio?.signal.time ?? 0);self.playing=false;self.expressionSegment=nil;self.duplex.phase = .thinking;self.emit("played",turn:self.turn)}
                     self.changed?()
                 }
                 audio.failure={ [weak self] error in guard let self,self.active,self.epoch == token else{return};self.stop(error,failed:true) }
@@ -80,7 +83,7 @@ import NookPluginSDK
                     if audio.signal.time>0{break};try await Task.sleep(for:.milliseconds(50))
                 }
                 guard audio.signal.time>0 else{throw VoiceProblem.message("The microphone did not deliver audio")}
-                emitControls();SpeechTiming.mark("voiceReady");duplex.phase = .listening;status="Listening · \(preferences.dictationASR.title)";emit("ready",text:status,mode:mode);changed?()
+                emit("expressionCapabilities",text:PluginExpressionCapability().encoded());emitControls();SpeechTiming.mark("voiceReady");duplex.phase = .listening;status="Listening · \(preferences.dictationASR.title)";emit("ready",text:status,mode:mode);changed?()
                 monitor=Task{[weak self] in while !Task.isCancelled{try? await Task.sleep(for:.milliseconds(100));guard let self,self.active,self.epoch==token else{return};self.tick()} }
             }catch{if epoch==token{stop(error.localizedDescription,failed:true)}}
         }
@@ -105,7 +108,7 @@ import NookPluginSDK
             }
         }
         if !interruption.protects(at: signal.time), gate.audio(rms:signal.rms,through:signal.time,allowed:listening){
-            speaker?.stop();playing=false;duplex.phase = .listening;status="Listening";emit("speechStarted",turn:turn);changed?()
+            expressionSegment=nil;speaker?.stop();playing=false;duplex.phase = .listening;status="Listening";emit("speechStarted",turn:turn);changed?()
         }
         guard listening,endpoint==nil,gate.canCommit(at:signal.time) else{return}
         finishTurn()
@@ -125,7 +128,7 @@ import NookPluginSDK
             let time = audio?.signal.time ?? 0, wasSpeaking = gate.speaking
             try gate.receive(value, now: time)
             if !wasSpeaking && gate.speaking {
-                interruption.admitUser(at: time); speaker?.stop(); playing = false
+                interruption.admitUser(at: time); expressionSegment = nil; speaker?.stop(); playing = false
                 duplex.phase = .listening; emit("speechStarted", turn: turn)
             }
             if !gate.text.isEmpty { recognized = true; emit("partial", text: gate.text) }
@@ -173,28 +176,41 @@ import NookPluginSDK
         guard active,message.requestID==request,let frame=message.frame,frame.sequence==inputSequence else{throw VoiceProblem.message("Stale conversation command")}
         try frame.validate(PluginSpeechConversation.input);inputSequence += 1
         guard case .string(let kind)=frame.values["kind"] else{throw VoiceProblem.message("Missing conversation command")}
-        let target:Int={if case .number(let value)=frame.values["turn"]{return Int(value)};return turn}()
+        let target:Int
+        if case .number(let value)=frame.values["turn"] {
+            guard value.isFinite, value.rounded() == value else { throw VoiceProblem.message("Invalid conversation turn") }; target = Int(value)
+        } else { target = turn }
         if target<turn{return};guard target==turn else{throw VoiceProblem.message("Unknown conversation turn")}
         switch kind {
         case "text":
             guard case .string(let text)=frame.values["text"],!text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else {throw VoiceProblem.message("Enter a message")}
             interruption.admitUser(at: audio?.signal.time ?? 0); pendingRecognition = nil
-            speaker?.stop();playing=false
+            expressionSegment=nil;speaker?.stop();playing=false
             emit("speechStarted",turn:turn);duplex.phase = .thinking;audio?.recognition(listening)
             status="Thinking";finishTurn(typed:text)
-        case "speak":
-            guard !playing,let preferences,case .string(let text)=frame.values["text"],!text.isEmpty else{throw VoiceProblem.message("Speech output is busy or empty")}
+        case "speak", "speakExpression":
+            guard !playing,let preferences,let speaker,case .string(let payload)=frame.values["text"] else{throw VoiceProblem.message("Speech output is busy or empty")}
+            let text: String
+            let segment: PluginExpressionSegment?
+            if kind == "speakExpression" {
+                let parsed = try PluginExpressionSegment.decode(payload)
+                guard let request else { throw VoiceProblem.message("Voice conversation ended") }
+                try expressionAdmission.admit(parsed, session:request, turn:turn); segment = parsed; text = parsed.text
+            } else { segment = nil; text = payload }
+            guard !text.isEmpty else { throw VoiceProblem.message("Speech output is empty") }
+            // Admission re-reads the selected runtime; a cue never selects one.
+            let resolved = SpeechExpression.resolve(segment?.cue, backend:preferences.speechBackend, delivery:preferences.speechDelivery, options:preferences.qwenOptions)
             SpeechTiming.mark("speakReceived",turn:turn)
             interruption.beginPlayback(text, at: audio?.signal.time ?? 0);pendingRecognition = nil
-            playing=true;duplex.phase = .speaking;audio?.recognition(listening);status="Preparing speech…"
-            try speaker?.speak(text, backend:preferences.speechBackend, voiceID:preferences.voiceID,
-                               appleVoice:preferences.selectedSpeechVoice, qwenSpeaker:preferences.qwenSpeaker,
-                               locale:preferences.locale, delivery:preferences.speechDelivery, qwenOptions:preferences.qwenOptions)
+            expressionSegment=segment;playing=true;duplex.phase = .speaking;audio?.recognition(listening);status="Preparing speech…"
+            try speaker.speak(text, backend:preferences.speechBackend, voiceID:preferences.voiceID,
+                              appleVoice:preferences.selectedSpeechVoice, qwenSpeaker:preferences.qwenSpeaker,
+                              locale:preferences.locale, delivery:resolved.delivery, qwenOptions:resolved.options)
         case "sensitivity":
             guard case .string(let value)=frame.values["text"], let number=Int(value), (0...100).contains(number), let preferences else { throw VoiceProblem.message("Choose an interruption sensitivity from 0 to 100.") }
             preferences.interruptionSensitivity=number;interruption.sensitivity=number;interruption.resetEvidence();pendingRecognition=nil;emitControls()
         case "listen":duplex.phase = .listening;audio?.recognition(listening);status="Listening";emit("listening",turn:turn)
-        case "interrupt":interruption.endPlayback(at:audio?.signal.time ?? 0);speaker?.stop();playing=false;duplex.phase = .thinking;audio?.recognition(listening)
+        case "interrupt":interruption.endPlayback(at:audio?.signal.time ?? 0);expressionSegment=nil;speaker?.stop();playing=false;duplex.phase = .thinking;audio?.recognition(listening)
         case "mode":
             guard case .string(let value)=frame.values["mode"] else{throw VoiceProblem.message("Choose a duplex mode")}
             let next=try PluginSpeechConversation.mode(value)
@@ -213,7 +229,7 @@ import NookPluginSDK
     }
     func stop(_ message:String="Conversation stopped",failed:Bool=false){
         let old=request;request=nil;active=false;epoch=UUID();task?.cancel();task=nil;cancelEndpoint();monitor?.cancel();monitor=nil;duplex.phase = .closed
-        speaker?.changed=nil;speaker?.shutdown();speaker=nil;audio?.stop();audio=nil;recognizer?.cancel();recognizer=nil;playing=false;gate=ConversationTurn();interruption=ConversationInterruption();pendingRecognition=nil;status=message;changed?()
+        speaker?.changed=nil;speaker?.shutdown();speaker=nil;audio?.stop();audio=nil;recognizer?.cancel();recognizer=nil;playing=false;expressionSegment=nil;expressionAdmission = .init();gate=ConversationTurn();interruption=ConversationInterruption();pendingRecognition=nil;status=message;changed?()
         if let old{send?(.init(.update,requestID:old,update:.init(failed ? .failed:.cancelled,message:String(message.prefix(280)))))}
     }
     func cancel(_ id:UUID){if id==request{stop()}}

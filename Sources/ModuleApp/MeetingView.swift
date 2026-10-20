@@ -43,10 +43,14 @@ extension MeetingModel {
             canVerify: calendarLink.map { link in calendarReadEntries.contains { $0.address.plugin == link.provider } } ?? false,
             canOpen: calendarLink?.event.url != nil)
         let showNotes = ["thoughts", "notes"].contains(notebookPage) && !calendarPickerOpen
+        let evidenceItems = notebook?.evidence ?? []
+        let evidencePage = min(max(0, noteEvidencePage), max(0, (evidenceItems.count - 1) / 6))
         var state: [String: PluginValue] = [
             "organization": .string(json(organizationViewState)), "calendar": .string(json(calendarView)), "ask": .string(json(ask)), "highlight": .string(highlightedUtterance),
             "notebookPage": .string(notebookPage), "thoughts": .string(showNotes ? notebook?.thoughts ?? "" : ""), "summary": .string(showNotes ? notebook?.summary ?? "" : ""),
             "decisions": .string(showNotes ? notebook?.decisions ?? "" : ""), "actionItems": .string(showNotes ? notebook?.actions ?? "" : ""), "notesReviewed": .boolean(notebook?.reviewed ?? false),
+            "noteEvidence": .string(json(showNotes ? evidenceItems.dropFirst(evidencePage * 6).prefix(6).map { ["id": $0.id.uuidString, "section": $0.section.rawValue, "fact": $0.fact, "quote": $0.quote, "start": String($0.start), "track": $0.track] } : [])),
+            "noteEvidencePaging": .string(json(["page": evidencePage, "pages": max(1, (evidenceItems.count + 5) / 6), "count": evidenceItems.count])),
             "liveEnabled": .boolean(liveEnabled), "liveStatus": .string(liveStatus), "liveDraft": .boolean(showingLiveTranscript),
             "hasLive": .boolean(hasLiveTranscript), "hasRefined": .boolean(hasRefinedTranscript),
             "partials": .string(json(notebookPage == "transcript" && !calendarPickerOpen ? liveState.partials.values.sorted { $0.start < $1.start }.map { ["track": $0.track, "start": String($0.start), "text": String(decoding: $0.text.utf8.prefix(700), as: UTF8.self)] } : [])),
@@ -122,6 +126,8 @@ extension MeetingModel {
             case "questionProvider": if !askingQuestion, case .string(let provider) = event.values["provider"], questionProviders.contains(where: { $0.address.key == provider }) { questionProvider = provider; questionSnapshot = nil }
             case "chatFilter": if !askingQuestion, case .string(let filter) = event.values["question"], filter.utf8.count <= 512 { questionLibraryFilter = filter; UserDefaults.standard.set(filter, forKey: "meetingChatFilter"); questionSnapshot = nil }
             case "questionSource": if case .string(let citation) = event.values["citation"] { openQuestionSource(citation, turn: { if case .string(let id) = event.values["event"] { return id }; return "" }()) }
+            case "noteSource": if case .string(let citation) = event.values["citation"] { openNoteSource(citation) }
+            case "noteEvidencePage": if case .number(let offset) = event.values["offset"], offset.isFinite, offset.rounded() == offset, (0...4).contains(offset) { noteEvidencePage = Int(offset) }
             case "chatScope": if case .string(let scope) = event.values["page"] { setQuestionScope(scope) }
             case "chatTurn": if case .string(let id) = event.values["event"] { inspectChatTurn(id) }
             case "chatPage": if !askingQuestion, case .number(let page) = event.values["offset"], page.isFinite { chatPage = min(max(0, Int(page)), max(0, (meetingChat.turns.count - 1) / 2)) }

@@ -120,6 +120,9 @@ public enum MeetingSummarizer {
         notebook.summary = try render(drafts[0].summary, lines: lines)
         notebook.decisions = try render(drafts[0].decisions, lines: lines)
         notebook.actions = try render(drafts[0].actions, lines: lines)
+        notebook.evidence = try [(MeetingNoteEvidence.Section.summary, drafts[0].summary), (.decisions, drafts[0].decisions), (.actions, drafts[0].actions)].flatMap { section, items in
+            try items.map { try MeetingNoteEvidence(section: section, fact: $0.fact, source: lines[$0.source]) }
+        }
         notebook.generatedAt = Date(); notebook.sourceProvider = transcript.providerID ?? "apple"
         notebook.sourceRevision = transcript.modelRevision; notebook.sourceDigest = MeetingNotebook.digest(transcript)
         try notebook.validate(); progress(1); return notebook

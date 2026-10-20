@@ -60,7 +60,7 @@ const namesKey=(s.selected||'')+s.speakers+String(s.busy);if(speakerRevision!==n
 }
 
 for(const [id,page] of [['tabTranscript','transcript'],['tabThoughts','thoughts'],['tabNotes','notes'],['tabAsk','ask']])$(id).onclick=()=>{if(notebookDirty){$('notesSave').textContent='Save your edits before changing tabs.';return;}emit('notebook',{command:'page',page});};
-for(const id of ['thoughts','summary','decisions','actions','notesReviewed'])$(id).oninput=()=>{notebookDirty=true;$('notesSave').textContent='Unsaved edits';};
+for(const id of ['thoughts','summary','decisions','actions','notesReviewed'])$(id).oninput=()=>{notebookDirty=true;$('notesSave').textContent='Unsaved edits';renderNoteEvidence();};
 $('saveNotes').onclick=()=>{const values={thoughts:$('thoughts').value,summary:$('summary').value,decisions:$('decisions').value,actions:$('actions').value,reviewed:$('notesReviewed').checked};if(Object.values(values).some(v=>typeof v==='string'&&new TextEncoder().encode(v).length>2048)){$('notesSave').textContent='Keep each field under 2 KB.';return;}emit('notebook',{command:'save',...values});notebookDirty=false;$('notesSave').textContent='Saving…';};
 $('summarize').onclick=()=>{if(notebookDirty){$('notesSave').textContent='Save your edits first.';return;}if(s.summary||s.decisions||s.actionItems){$('notesSave').textContent='Replace existing summary?';$('summarize').textContent='Replace summary draft';if(!replaceConfirmed){replaceConfirmed=true;return;}replaceConfirmed=false;}emit('notebook',{command:'summarize'});};
 $('cancelSummary').onclick=()=>emit('notebook',{command:'cancel'});$('copyNotes').onclick=()=>emit('notebook',{command:'copy',personal:$('includePersonal').checked});
@@ -70,8 +70,25 @@ function renderNotebook(){
  if(notebookID!==s.selected){notebookID=s.selected;notebookDirty=false;replaceConfirmed=false;$('notesSave').textContent='';$('includePersonal').checked=false;}
  if(!notebookDirty&&['thoughts','notes'].includes(page)){for(const [id,key] of [['thoughts','thoughts'],['summary','summary'],['decisions','decisions'],['actions','actionItems']]){if(document.activeElement!==$(id))$(id).value=s[key]||'';}$('notesReviewed').checked=!!s.notesReviewed;}
  $('saveNotes').disabled=!!s.summarizing;$('summarize').disabled=s.busy||!s.hasTranscript||!s.summaryAvailable;$('cancelSummary').hidden=!s.summarizing;
- $('summaryHint').textContent=s.summarizing?'Summarizing on this Mac…':!s.summaryAvailable?'Enable Apple Intelligence for local summaries.':s.notesStale?'Transcript changed — regenerate or review this draft.':s.notesReviewed?'Reviewed notes':'AI drafts need your review. No recording is uploaded.';
+ $('summaryHint').textContent=s.summarizing?'Summarizing on this Mac…':s.notesStale?'Transcript changed — saved source links are stale. Regenerate to update them.':!s.summaryAvailable?'Enable Apple Intelligence for local summaries.':s.notesReviewed?'Reviewed notes':'AI drafts need your review. No recording is uploaded.';
+ renderNoteEvidence();
  if(s.status==='Notes saved on this Mac'&&!notebookDirty)$('notesSave').textContent='Saved on this Mac';
+}
+function renderNoteEvidence(){
+ const items=parse(s.noteEvidence)||[];$('noteEvidencePanel').hidden=!items.length;$('noteEvidence').replaceChildren();
+ const paging=parse(s.noteEvidencePaging)||{};const page=+paging.page||0,pages=+paging.pages||1;
+ $('noteEvidencePage').textContent=`${page+1} / ${pages}`;$('noteEvidencePrevious').disabled=page<=0||notebookDirty;$('noteEvidenceNext').disabled=page+1>=pages||notebookDirty;
+ $('noteEvidencePrevious').onclick=()=>{if(!notebookDirty)emit('notebook',{command:'noteEvidencePage',offset:page-1});};$('noteEvidenceNext').onclick=()=>{if(!notebookDirty)emit('notebook',{command:'noteEvidencePage',offset:page+1});};
+ $('noteEvidenceHint').textContent=s.notesStale?'These quotes belong to an earlier transcript. Regenerate to open current sources.':notebookDirty?'Save your edits before opening a source. Edited sections lose their generated links.':'Check each claim against the original words. Speaker labels do not establish a person’s identity.';
+ for(const item of items){
+  const card=document.createElement('article');card.className='noteEvidenceCard';
+  const label=document.createElement('small');label.textContent=({summary:'Summary',decisions:'Decision',actions:'Action item'})[item.section]||'Note';
+  const fact=document.createElement('p');fact.textContent=item.fact;
+  const quote=document.createElement('blockquote');quote.textContent=item.quote;
+  const source=document.createElement('button');source.textContent=`Open ${time(item.start)} · ${item.track==='mic'?'room audio':'call audio'}`;source.disabled=!!s.notesStale||!!s.busy||notebookDirty;
+  source.onclick=()=>{if(notebookDirty||s.notesStale)return;emit('notebook',{command:'noteSource',citation:item.id});};
+  card.append(label,fact,quote,source);$('noteEvidence').append(card);
+ }
 }
 
 $('bookmark').onclick=()=>emit('process',{action:'bookmark'});

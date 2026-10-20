@@ -1,3 +1,9 @@
+## October 19 · structured meeting evidence source candidate
+
+Optional per-item source links survive notebook reopen, reject transcript/name/clock/identity changes, and are removed when their editable category changes. Old notebooks decode without migration. Six source cards per page keep the payload bounded. Combined `swift test` passes 161 tests with zero failures (including four concurrent expression checks); `swift build` and meeting web regression pass. Authored span attribution improves 6/8 to 8/8 after unique interval coverage replaces duplicate summation; this is not natural-speech DER/JER or a model-quality benchmark.
+
+Disposable nonpersistent native WebKit review passes exact source event and stale-control checks, with inspected dark/stale/light rendering. Actual host backend click, owner acceptance, semantic note support/completeness, natural speaker separation and real selected-text editing remain separate. No installed app, preference, grant, Fn path or account changed. [Full source evidence and limitations](../../NeroNook/reports/voice-improvement-2026-10-19/README.md).
+
 **October 15 · Voice 0.18.0, Teams offers and per-source speakers:** installed
 locally on host 0.32.0. Native Teams and supported browser/PWA call controls can
 produce a focus-free **Start notes / Not now** offer. Detection never records;

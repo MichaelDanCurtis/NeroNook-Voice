@@ -24,6 +24,22 @@ elements.get('meetingQuestion').value='When is launch?';elements.get('meetingQue
 const answer=elements.get('meetingAnswer'), citation=answer.children[1].children[1].children[0];citation.onclick();assert.equal(emitted.pop().values.citation,'s1');
 callback({...state,ask:JSON.stringify({busy:false,providers:[],sources:[],prepared:false})});assert.equal(elements.get('meetingAnswer').hidden,true);
 console.log('PASS: synchronous bootstrap, Ask control bindings, changed-question guard, citation events, no empty answer');
+
+const noteItem={id:'authored-note-id',section:'decisions',fact:'Thursday was agreed.',quote:'We agreed Thursday.',start:13,track:'system'};
+const noteState={...state,notebookPage:'notes',noteEvidence:JSON.stringify([noteItem]),noteEvidencePaging:JSON.stringify({page:0,pages:2,count:7}),notesStale:false,summaryAvailable:true};
+callback(noteState);
+let noteCard=elements.get('noteEvidence').children[0];
+assert.equal(noteCard.children[1].textContent,noteItem.fact);assert.equal(noteCard.children[2].textContent,noteItem.quote);
+noteCard.children[3].onclick();assert.equal(emitted.pop().values.citation,noteItem.id);
+elements.get('noteEvidenceNext').onclick();assert.equal(emitted.pop().values.offset,1);
+callback({...noteState,notesStale:true,summaryAvailable:false});
+assert.equal(elements.get('noteEvidence').children[0].children[3].disabled,true);
+assert(elements.get('summaryHint').textContent.includes('stale'));
+callback(noteState);elements.get('summary').value='My manual revision';elements.get('summary').oninput();
+assert.equal(elements.get('noteEvidence').children[0].children[3].disabled,true);
+const beforeDirtyClick=emitted.length;elements.get('noteEvidence').children[0].children[3].onclick();assert.equal(emitted.length,beforeDirtyClick);
+elements.get('saveNotes').onclick();
+console.log('PASS: structured note source event, stale/unavailable precedence, unsaved edit navigation guard');
 // A changed source/date must not leave selectable rows from the previous list.
 const calendar={open:true,busy:false,day:'2026-10-13',provider:'test.calendar/list',providers:[{id:'test.calendar/list',title:'Test calendar'},{id:'test.other/list',title:'Other calendar'}],events:[{id:'0',title:'Design review',when:'9 AM',calendar:'Test'}],status:'Choose the exact meeting occurrence.',next:6,total:7};
 callback({...state,calendar:JSON.stringify(calendar)});
