@@ -1,3 +1,15 @@
+# Selected-text candidate 0.22.0 · October 20, 2026
+
+176 Swift tests pass, including 15 new selected-text/shortcut cases. Both existing
+web scripts pass after their fake browser contexts were updated for the existing
+avatar callback. Light/Dark disposable native review and one real Foundation
+Models rewrite of an authored passage pass. These do not prove real editor
+replacement or Undo: the separate AX fixture process reports no Accessibility
+permission. Physical shortcut, native/browser/Electron editors, focus restoration
+and privacy/permissions on another Mac are pending. No installed app, preference,
+permission or public release changed. Full checks/limits are in the host's
+`reports/voice-selected-text-2026-10-20/README.md`.
+
 ## October 19 · structured meeting evidence source candidate
 
 Optional per-item source links survive notebook reopen, reject transcript/name/clock/identity changes, and are removed when their editable category changes. Old notebooks decode without migration. Six source cards per page keep the payload bounded. Combined `swift test` passes 161 tests with zero failures (including four concurrent expression checks); `swift build` and meeting web regression pass. Authored span attribution improves 6/8 to 8/8 after unique interval coverage replaces duplicate summation; this is not natural-speech DER/JER or a model-quality benchmark.

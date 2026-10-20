@@ -60,7 +60,7 @@ import NookPluginSDK
             }
         }
         meetings.changed = { [weak self] in self?.publish() }
-        meetings.canStart = { [weak self] in guard let self else { return false }; return !self.conversation.active && !self.model.session.recording && !self.model.waiting && !self.model.preparingAssets && !self.model.inserting && !self.model.polishing && !self.model.speaking }
+        meetings.canStart = { [weak self] in guard let self else { return false }; return !self.model.rewrite.active && !self.conversation.active && !self.model.session.recording && !self.model.waiting && !self.model.preparingAssets && !self.model.inserting && !self.model.polishing && !self.model.speaking }
         meetings.microphone = { [weak self] in self?.model.microphone ?? "" }
         meetings.locale = { [weak self] in self?.model.locale ?? "en-US" }
         if !test { meetings.startCallDetection() }
@@ -290,6 +290,10 @@ struct VoiceSettings: View {
                 inputSettings.disabled(model.busy)
                 PluginSettingsSection("Conversation interruptions") { InterruptionSensitivityView(value: $model.interruptionSensitivity) }
                 dictationSettings.disabled(model.busy)
+                PluginSettingsSection("Selected-text editing") {
+                    ShortcutRecorder(model: model, rewrite: true)
+                    Text("Highlight text in an editable field, then use this shortcut. Review a local rewrite before Replace; Cancel changes nothing. Exact Undo is available while the text and cursor are unchanged. Unsupported fields keep a copyable draft. No audio or cloud provider is used.").font(.caption).pluginSecondaryText().fixedSize(horizontal: false, vertical: true)
+                }.disabled(model.busy)
                 outputSettings.disabled(model.busy)
                 PluginAdvancedSection(detail: "Conversation timing and model preparation affect Talk. Hold-to-dictate still ends when you release the shortcut.") {
                 HStack {

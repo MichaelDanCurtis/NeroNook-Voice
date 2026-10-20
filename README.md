@@ -1,3 +1,11 @@
+**October 20 · local 0.22.0 source candidate:** select text in another app and
+press Control–Option–R for a local rewrite preview. Configurable shortcut,
+Rephrase/Clarify/tone/writing choices, guarded exact replacement and Undo; no
+countdown, microphone or cloud provider. 176 Swift checks and native Light/Dark
+preview pass. The separate AX probe lacks Accessibility permission, so actual
+editor/shortcut acceptance and installation remain pending; installed 0.21.12
+is retained. [Usage](docs/SELECTED-TEXT.md) · [evidence](../NeroNook/reports/voice-selected-text-2026-10-20/README.md).
+
 **October 20 · local 0.21.11:** avatar tickle and playful Zoom use the current local speech selection through the shared SDK, with measured mouths, exact cancellation and a silent Wave/Twirl menu. Existing voice settings and action scopes are retained. [Installed checks and limits](../NeroNook/reports/avatar-playful-reactions-2026-10-20/README.md). Local only.
 
 **October 19 · local source candidate:** generated meeting summaries, decisions and actions retain structured original-passage links, with exact source freshness checks and six-item source review pages. Manual section edits remove their generated links. Duplicate same-speaker spans no longer inflate attribution coverage. Combined Voice checks pass 161 tests and build; disposable native WebKit notes review passes. Selected-text rewriting remains a focused proposal, and real meeting quality remains unscored. No installation or public release. [Evidence and limits](../NeroNook/reports/voice-improvement-2026-10-19/README.md).

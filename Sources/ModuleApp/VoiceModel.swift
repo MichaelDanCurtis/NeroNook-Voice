@@ -5,6 +5,7 @@ import Combine
 import ModuleCore
 import VoiceAudio
 import NookPluginSDK
+import VoiceEditing
 
 @MainActor final class VoiceModel: ObservableObject {
     @Published var personalization = DictationPersonalization()
@@ -172,6 +173,15 @@ import NookPluginSDK
     private var assetGeneration = UUID()
     private let speaker = SpeechOutput()
     private let hotkey = PushToTalk()
+    private let rewriteHotkey = PushToTalk(id: 2)
+    let rewrite = SelectionRewrite(editor: AXSelectionEditor(), generate: SelectionTransformer.transform)
+    private lazy var rewriteWindow = SelectionRewriteWindow(model: rewrite)
+    @Published private(set) var rewriteShortcut: DictationShortcut? = {
+        if UserDefaults.standard.bool(forKey: "rewriteShortcutOff") { return nil }
+        if let data = UserDefaults.standard.data(forKey: "rewriteShortcutBinding"),
+           let saved = try? JSONDecoder().decode(DictationShortcut.self, from: data), saved.valid, saved.trigger == .key { return saved }
+        return .init(keyCode: 15, modifiers: 4096 | 2048, keyLabel: "R")
+    }()
     private var observations = Set<AnyCancellable>()
     private var lifecycleObservers: [NSObjectProtocol] = []
     private var outgoing: UUID?
@@ -199,7 +209,7 @@ import NookPluginSDK
     private(set) var inputLevel = 0.0
     private var levelTask: Task<Void, Never>?
     private var captionFault = false
-    var busy: Bool { referenceChecking || referenceSaving || referenceRecording || appPicker != nil || session.recording || waiting || preparingAssets || polishing || inserting || meetingActive?() == true }
+    var busy: Bool { rewrite.active || referenceChecking || referenceSaving || referenceRecording || appPicker != nil || session.recording || waiting || preparingAssets || polishing || inserting || meetingActive?() == true }
     var transientCaption: PluginTransientCaption? {
         guard usesHostCaption, captionVisible else { return nil }
         let words = !captionResult && session.phase == .preparing ? "" : overlayText ?? session.transcript
@@ -234,6 +244,12 @@ import NookPluginSDK
         objectWillChange.sink { [weak self] _ in Task { @MainActor in self?.changed?() } }.store(in: &observations)
         hotkey.cancelled = { [weak self] in self?.cancel(); self?.status = "Shortcut interrupted · no text pasted" }
         hotkey.pressed = { [weak self] in self?.shortcutPressed() }
+        rewriteHotkey.pressed = { [weak self] in self?.beginSelectionRewrite() }
+        rewrite.changed = { [weak self] in
+            guard let self else { return }
+            if !self.rewrite.active { self.rewriteWindow.hide() }
+            self.objectWillChange.send(); self.changed?()
+        }
         hotkey.released = { [weak self] in
             guard let self else { return }
             if self.shortcutState.release(style: self.shortcutStyle) == .stop { self.stopRecording() }
@@ -299,17 +315,49 @@ import NookPluginSDK
     func requestInsertionPermission() { insertion.requestPermission(); accessibilityAllowed = insertion.permitted }
     func dismissOverlay() { if session.recording || inserting { cancel() }; overlayCompletion?.cancel(); overlay.hide() }
     var shortcutName: String { shortcut?.displayName ?? "Off" }
-    func configureHotkey() { guard !CommandLine.arguments.contains("--protocol-test"), Bundle.main.object(forInfoDictionaryKey: "NeroLiveFixtureAudio") == nil else { return }; do { try hotkey.configure(shortcut) } catch { status = error.localizedDescription } }
-    func pauseShortcutForRecording() { hotkey.stop() }
+    func configureHotkey() {
+        guard !CommandLine.arguments.contains("--protocol-test"), Bundle.main.object(forInfoDictionaryKey: "NeroLiveFixtureAudio") == nil else { return }
+        do { try hotkey.configure(shortcut) } catch { status = error.localizedDescription }
+        do {
+            if rewriteShortcutConflict { rewriteHotkey.stop(); status = "Rewrite conflicts with dictation. Choose a different shortcut in Voice settings." }
+            else { try rewriteHotkey.configure(rewriteShortcut) }
+        } catch { status = error.localizedDescription }
+    }
+    var rewriteShortcutConflict: Bool { if let rewriteShortcut, let shortcut { return rewriteShortcut.sameBinding(as: shortcut) }; return false }
+    var rewriteShortcutName: String { rewriteShortcutConflict ? "Conflict · choose another shortcut" : rewriteShortcut?.displayName ?? "Off" }
+    func pauseShortcutForRecording() { hotkey.stop(); rewriteHotkey.stop() }
     func resumeShortcutAfterRecording() { configureHotkey() }
+    func beginSelectionRewrite() {
+        if rewrite.active { rewriteWindow.show(); return }
+        guard !busy, !speaking else { status = "Finish the current Voice activity before Rewrite."; changed?(); return }
+        do {
+            try rewrite.begin() // Capture BEFORE bringing the review window forward.
+            rewriteWindow.show()
+        } catch { status = error.localizedDescription; changed?() }
+    }
+    func chooseRewriteShortcut(_ candidate: DictationShortcut?) {
+        guard !busy else { return }
+        guard candidate == nil || (candidate!.valid && candidate!.trigger == .key && !(shortcut.map { candidate!.sameBinding(as: $0) } ?? false)) else {
+            status = "Use a key combination different from dictation for Rewrite."; configureHotkey(); return
+        }
+        do {
+            try rewriteHotkey.configure(candidate)
+            rewriteShortcut = candidate
+            UserDefaults.standard.set(candidate == nil, forKey: "rewriteShortcutOff")
+            UserDefaults.standard.set(candidate.flatMap { try? JSONEncoder().encode($0) }, forKey: "rewriteShortcutBinding")
+            configureHotkey(); status = candidate.map { "Rewrite shortcut set to \($0.displayName)" } ?? "Rewrite shortcut off"
+        } catch { configureHotkey(); status = error.localizedDescription }
+    }
     func chooseShortcut(_ candidate: DictationShortcut?) {
         guard !busy else { return }
+        guard candidate == nil || !(rewriteShortcut.map { candidate!.sameBinding(as: $0) } ?? false) else { status = "Choose different shortcuts for dictation and Rewrite."; configureHotkey(); return }
         guard candidate?.valid ?? true else { status = "Choose Fn, modifiers, a key combination or an F-key."; configureHotkey(); return }
         do {
             try hotkey.configure(candidate)
             shortcut = candidate
             UserDefaults.standard.set(candidate.flatMap { try? JSONEncoder().encode($0) }, forKey: "dictationShortcutBinding")
             UserDefaults.standard.set(candidate == nil ? "Off" : "Custom", forKey: "shortcut")
+            configureHotkey()
             status = candidate.map { "Dictation shortcut set to \($0.displayName)" } ?? "Dictation shortcut off"
         } catch {
             configureHotkey()
@@ -493,6 +541,7 @@ import NookPluginSDK
         }
     }
     func cancel() {
+        rewrite.close()
         cancelReference()
         speaker.shutdown()
         preloader.release()
@@ -623,5 +672,5 @@ import NookPluginSDK
             status = "\(dictationASR == .parakeet ? "Listening with Parakeet" : "Listening") · \(device) · input \(Int(signal.level * 100))%"
         }
     }
-    func shutdown() { cancel(); discardReferenceSource(); speaker.shutdown(); insertion.shutdown(); overlay.hide(); hotkey.stop(); lifecycleObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) } }
+    func shutdown() { cancel(); discardReferenceSource(); speaker.shutdown(); insertion.shutdown(); overlay.hide(); hotkey.stop(); rewriteHotkey.stop(); lifecycleObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) } }
 }

@@ -18,6 +18,8 @@ import ModuleCore
     private var choice: DictationShortcut?
     private var down = false
     private var generation = UUID()
+    private let hotkeyID: UInt32
+    init(id: UInt32 = 1) { hotkeyID = id }
     func configure(_ choice: DictationShortcut?) throws {
         stop(); guard let choice else { return }
         guard choice.valid else { throw VoiceProblem.message("Choose Fn, modifiers, a modified key or a function key.") }
@@ -28,13 +30,14 @@ import ModuleCore
             guard let event, let context else { return OSStatus(eventNotHandledErr) }
             var keyID = EventHotKeyID()
             guard GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &keyID) == noErr,
-                  keyID.signature == 0x4E565043, keyID.id == 1 else { return OSStatus(eventNotHandledErr) }
+                  keyID.signature == 0x4E565043 else { return OSStatus(eventNotHandledErr) }
             let controller = Unmanaged<PushToTalk>.fromOpaque(context).takeUnretainedValue()
+            guard keyID.id == controller.hotkeyID else { return OSStatus(eventNotHandledErr) }
             MainActor.assumeIsolated { controller.handle(GetEventKind(event) == UInt32(kEventHotKeyPressed)) }
             return noErr
         }, specs.count, &specs, Unmanaged.passUnretained(self).toOpaque(), &handler)
         guard status == noErr else { throw VoiceProblem.message("Could not install the shortcut handler.") }
-        let result = RegisterEventHotKey(choice.keyCode, choice.modifiers, EventHotKeyID(signature: 0x4E565043, id: 1), GetApplicationEventTarget(), UInt32(kEventHotKeyExclusive), &reference)
+        let result = RegisterEventHotKey(choice.keyCode, choice.modifiers, EventHotKeyID(signature: 0x4E565043, id: hotkeyID), GetApplicationEventTarget(), UInt32(kEventHotKeyExclusive), &reference)
         guard result == noErr else { stop(); throw VoiceProblem.message("That shortcut is unavailable. Choose another one.") }
     }
     static func modifiers(_ flags: CGEventFlags) -> UInt32 {

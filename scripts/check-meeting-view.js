@@ -15,7 +15,7 @@ const sources=[{id:'s1',label:'00:00:08 · Microphone',text:'Launch is Friday.'}
 const state={selected:'synthetic-meeting',hasTranscript:true,notebookPage:'ask',library:'[]',sources:'[]',transcript:'[]',speakers:'{}',
   ask:JSON.stringify({busy:false,question:'When is launch?',provider:'test.assistant/answer_evidence',providers:[{id:'test.assistant/answer_evidence',title:'Test assistant'}],prepared:true,coverage:'Full settled transcript',sources,
     answer:{disposition:'answered',statements:[{text:'Friday.',citations:['s1']}]}})};
-const context={document,TextEncoder,setTimeout,clearTimeout,nero:{onState(fn){callback=fn;fn({});fn(state);},emit(name,values){emitted.push({name,values});return Promise.resolve();}}};
+const context={window:{},document,TextEncoder,setTimeout,clearTimeout,nero:{onState(fn){callback=fn;fn({});fn(state);},emit(name,values){emitted.push({name,values});return Promise.resolve();}}};
 vm.runInNewContext(fs.readFileSync('Resources/Views/meetings/meeting.js','utf8'),context);
 assert.equal(typeof elements.get('tabAsk').onclick,'function');
 elements.get('tabAsk').onclick();assert.equal(emitted.pop().values.page,'ask');

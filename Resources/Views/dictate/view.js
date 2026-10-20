@@ -70,9 +70,11 @@ nero.onState(s=>{
  let devices=[];try{devices=JSON.parse(s.microphones||'[]');}catch{}
  const key=JSON.stringify(devices);if($('microphoneChoice').dataset.devices!==key){$('microphoneChoice').dataset.devices=key;$('microphoneChoice').replaceChildren(new Option('System default',''));for(const d of devices)$('microphoneChoice').add(new Option(d.name,d.id));}
  $('microphoneChoice').value=s.microphone||'';$('microphoneChoice').disabled=!!s.busy;
- $('dictationHeading').textContent=s.recording?'Listening…':s.busy?'Finishing your words…':'Your voice, in any app.';
+ $('dictationHeading').textContent=s.recording?'Listening…':s.rewriting?'Review your selected text.':s.busy?'Finishing your words…':'Your voice, in any app.';
  $('text').hidden=!s.recording&&!s.text;$('draftActions').hidden=!!s.busy||!s.text;
  $('stopDictation').hidden=!s.recording;$('cancel').hidden=!s.busy&&!s.speaking;
  $('status').hidden=!s.busy&&!s.speaking&&!/(error|failed|unavailable|permission|allow|could not|download|needed|not ready)/i.test(s.status||'');
 });
 for(const id of ['tabDictate','tabStyles','tabSnippets','tabHistory','speechSettings','record']){const handler=$(id).onclick;$(id).onclick=()=>{$('dictationMenu').open=false;handler();};}
+
+nero.onState(s=>{$('rewriteHint').textContent=s.rewriteConflict?'Rewrite shortcut conflicts with dictation. Choose another in Voice settings.':s.rewriteShortcut&&s.rewriteShortcut!=='Off'?'Select text in another app, then press '+s.rewriteShortcut+' to rewrite.':'Selected-text editing is off. Set a shortcut in Voice settings.';});
