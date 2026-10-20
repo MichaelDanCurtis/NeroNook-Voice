@@ -4,7 +4,7 @@ import NookPluginSDK
 
 extension VoiceModel {
     var voiceDefinition: PluginCustomView {
-        PluginCustomView(entry: "dictate/index.html", revision: "voice_22", state: [
+        var view = PluginCustomView(entry: "dictate/index.html", revision: "voice_22", state: [
             "microphone": .string(microphone),
             "microphones": .string(String(data: (try? JSONEncoder().encode(microphones.map { ["id": $0.id, "name": $0.displayName] })) ?? Data(), encoding: .utf8) ?? "[]"),
             "personal": .string(String(data: (try? JSONEncoder().encode(personalizationViewState)) ?? Data(), encoding: .utf8) ?? "{}"),
@@ -26,9 +26,13 @@ extension VoiceModel {
             .init("command", input: .init([.init("value", .string)])),
             .init("edit", input: .init([.init("text", .string)]))
         ], ownsChrome: true)
+        view.avatarReactions=true;view.avatarPlayback=avatarPlayback
+        view.state["reactionSpeaking"] = .boolean(avatarPlayback != nil)
+        return view
     }
     func handleVoice(_ event: PluginViewEvent) throws {
         guard event.panelID == "voice" else { throw VoiceProblem.message("Unknown voice view") }
+        if event.name == PluginAvatarPlayback.event {try handleAvatar(event);return}
         try voiceDefinition.validate(event)
         guard !CommandLine.arguments.contains("--protocol-test") else { return }
         if event.name == "microphone", case .string(let value) = event.values["value"] {

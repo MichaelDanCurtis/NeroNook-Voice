@@ -28,6 +28,7 @@ import NookPluginSDK
     private var accumulator = PluginCatalogAccumulator()
     private var meetingReads: [UUID: Task<Void, Never>] = [:]
     private var spokenRequest: UUID?
+    private var speechMeter:Task<Void,Never>?
     private var seen = Set<UUID>()
     private var timer: Timer?
     private var qwenCloseObserver: NSObjectProtocol?
@@ -44,6 +45,7 @@ import NookPluginSDK
             else if phase == .idle { update = .init(.cancelled, message: "Reading stopped"); self.spokenRequest = nil }
             else { update = .init(.running, message: phase == .preparing ? "Preparing local speech" : "Reading aloud") }
             self.bus(.init(.update, requestID: id, update: update))
+            if update.phase.terminal {self.speechMeter?.cancel();self.speechMeter=nil}
         }
         conversation.send = { [weak self] in self?.bus($0) }
         conversation.changed = { [weak self] in guard let self else{return};self.model.status=self.conversation.status;self.publish() }
@@ -160,6 +162,7 @@ import NookPluginSDK
                             conversation.stop();showMicrophoneWindow()
                             self.bus(.init(.update,requestID:bus.requestID,update:.init(.succeeded,message:"Voice settings opened")));return
                         }
+                        model.stopReaction()
                         try conversation.start(bus.requestID,values:values,preferences:model,available:!model.busy && !model.speaking && !meetings.occupied)
                         return
                     }
@@ -177,6 +180,15 @@ import NookPluginSDK
                         // Attach ownership after the renderer's synchronous stop/start,
                         // so its previous session cannot finish this new request.
                         try model.speakShared(text); spokenRequest = bus.requestID
+                        if model.avatarPlayback != nil {
+                            let id=bus.requestID
+                            speechMeter?.cancel()
+                            speechMeter=Task{[weak self] in while !Task.isCancelled {
+                                try? await Task.sleep(for:.milliseconds(100))
+                                guard !Task.isCancelled,let self,self.spokenRequest==id else{return}
+                                self.bus(.init(.update,requestID:id,update:.init(.running,message:"Character reaction",speech:self.model.speechPresentation)))
+                            }}
+                        }
                         self.bus(.init(.update, requestID: bus.requestID, update: .init(.running, message: "Preparing local speech")))
                         return
                     }
@@ -220,7 +232,7 @@ import NookPluginSDK
             customViews ? .init("voice", "Dictate", customView: model.voiceDefinition) : .init("voice", "Dictate", sections: sections, forms: model.session.recording ? nil : [form]),
             customViews ? .init("meetings", "Meetings", customView: meetings.definition) : .init("meetings", "Meetings", sections: [.init("Meeting recordings", "Open Nero Voice for meeting recording, bookmarks and playback.")])
         ])
-        snapshot.avatarInteractionBusy = model.busy || model.speaking || conversation.active || meetings.occupied || meetings.playing
+        snapshot.avatarInteractionBusy = model.busy || (model.speaking && model.avatarPlayback == nil) || conversation.active || meetings.occupied || meetings.playing
         do { try snapshot.validate(); emit("snapshot", snapshot: snapshot) }
         catch { emit("snapshot", snapshot: PluginSnapshot(title: "Nero Voice", status: "Voice view unavailable. Open settings or stop the current activity.", actions: [.init("cancel", "Stop activity", enabled: true, symbol: "stop.fill")], sections: [.init("Display issue", String(error.localizedDescription.prefix(200)))])) }
         publishCaption()

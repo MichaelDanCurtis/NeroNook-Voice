@@ -118,6 +118,34 @@ import NookPluginSDK
         return speechVoices.first { $0.language == locale } ?? AVSpeechSynthesisVoice(language: locale)
     }
     var speechVoiceName: String { if speechBackend == .qwen { return "Qwen3 · " + (qwenOptions.mode == .preset ? qwenSpeaker.rawValue : qwenOptions.mode == .design ? "Designed voice" : qwenProfiles.first(where: { $0.id == qwenOptions.cloneID })?.name ?? "Choose cloned voice") }; return voiceID == AppleSpeechOutput.voice2Identifier ? "Apple · American English · Voice 2" : selectedSpeechVoice?.name ?? "Voice unavailable" }
+    private var reactionOutput:ConversationAudio?
+    private var reactionID:UUID?
+    private var startingReaction=false
+    private var reactionKind:PluginAvatarReaction?
+    private var reactionMeter:Task<Void,Never>?
+    private var outputPhase:SpeechPlayback.Phase = .idle
+    var avatarPlayback:PluginAvatarPlayback? {
+        guard let id=reactionID,let kind=reactionKind,speaking else{return nil}
+        return .init(id:id,kind:kind,speech:speechPresentation)
+    }
+    var speechPresentation:PluginSpeechPlayback {
+        .init(outputPhase == .speaking ? .speaking:.preparing,level:outputPhase == .speaking ? (reactionOutput?.playbackLevel ?? 0):0)
+    }
+    func stopReaction(_ id:UUID?=nil) {if reactionID != nil,(id == nil || id == reactionID){stopSpeaking()}}
+    func react(_ kind:PluginAvatarReaction,id:UUID) throws {
+        guard kind.hasAudio else{return}
+        try speakShared(kind.spokenText,reactionID:id)
+    }
+    func handleAvatar(_ event:PluginViewEvent) throws {
+        try voiceDefinition.validate(event)
+        guard case .string(let raw)=event.values["id"],let id=UUID(uuidString:raw),case .string(let kind)=event.values["kind"] else{throw VoiceProblem.message("Invalid avatar gesture")}
+        if kind == "stop"{stopReaction(id)}else if let kind=PluginAvatarReaction(rawValue:kind){try react(kind,id:id)}
+        changed?()
+    }
+    private func clearReaction() {
+        reactionID=nil;reactionKind=nil;reactionMeter?.cancel();reactionMeter=nil
+        speaker.engineOutput=nil;reactionOutput?.stop();reactionOutput=nil
+    }
     var speechPhaseChanged: ((SpeechPlayback.Phase, String?) -> Void)?
     func chooseSpeechVoice(_ id: String) { stopSpeaking(); voiceID = id; changed?() }
     @Published var selectedKey = UserDefaults.standard.string(forKey: "assistant") ?? "" {
@@ -191,6 +219,7 @@ import NookPluginSDK
         loadPersonalization()
         speaker.changed = { [weak self] phase, error in
             guard let self else { return }
+            self.outputPhase=phase
             let wasSpeaking = self.speaking
             self.speaking = phase == .preparing || phase == .speaking
             if let error { self.status = error }
@@ -198,6 +227,7 @@ import NookPluginSDK
             else if phase == .speaking { self.status = "Reading aloud · \(self.speechVoiceName)" }
             else if phase == .finished { self.status = "Reading finished" }
             else if phase == .idle && wasSpeaking { self.status = "Reading stopped" }
+            if !self.speaking,self.reactionID != nil,!self.startingReaction {self.clearReaction()}
             self.speechPhaseChanged?(phase, error)
             self.changed?()
         }
@@ -529,9 +559,36 @@ import NookPluginSDK
         guard !busy, !CommandLine.arguments.contains("--protocol-test") else { return }
         do { try renderSpeech(text) } catch { status = error.localizedDescription; changed?() }
     }
-    func speakShared(_ text: String) throws {
+    func speakShared(_ text: String,reactionID requestedID:UUID?=nil) throws {
         guard !busy, !speaking, meetingActive?() != true, !CommandLine.arguments.contains("--protocol-test") else { throw VoiceProblem.message("Voice is busy. Finish the current activity first.") }
-        try renderSpeech(text)
+        let reaction=PluginAvatarReaction.allCases.first{$0.hasAudio && $0.spokenText == text}
+        startingReaction=reaction != nil;defer{startingReaction=false}
+        if let reaction {
+            reactionKind=reaction;reactionID=requestedID ?? UUID()
+            let output=ConversationAudio();try output.startOutput();reactionOutput=output;speaker.engineOutput=output
+        }
+        do {
+            if reaction != nil {
+                var options=qwenOptions
+                if speechBackend == .qwen,options.mode == .preset {
+                    let cue="Speak playfully with a happy smiling voice and light natural giggles. Keep the words clear."
+                    if options.instruction.utf8.count+cue.utf8.count+1<=512 {options.instruction += (options.instruction.isEmpty ? "":" ")+cue}
+                }
+                try speaker.speak(text,backend:speechBackend,voiceID:voiceID,appleVoice:selectedSpeechVoice,qwenSpeaker:qwenSpeaker,locale:locale,delivery:speechDelivery,qwenOptions:options)
+            } else {try renderSpeech(text)}
+        } catch {clearReaction();throw error}
+        if let reaction {
+            let id=reactionID
+            reactionMeter=Task{[weak self] in
+                let start=Date()
+                while !Task.isCancelled {
+                    try? await Task.sleep(for:.milliseconds(100))
+                    guard !Task.isCancelled,let self,self.reactionID==id else{return}
+                    if Date().timeIntervalSince(start)>40 || self.meetingActive?() == true || self.busy {self.stopReaction();return}
+                    self.changed?()
+                }
+            }
+        }
     }
     func releaseSpeakingModel() { speaker.shutdown(); status = "Speaking model released · downloaded files retained"; changed?() }
     func prepareQwen() {
@@ -555,7 +612,7 @@ import NookPluginSDK
     }
     func readDraft() { speakText(session.transcript) }
     func previewSpeech() { speakText("Welcome back. We have time to review your notes, or we can pick up right where we left off. What would you like to do?") }
-    func stopSpeaking() { speaker.stop(); speaking = false }
+    func stopSpeaking() { speaker.stop(); clearReaction(); speaking = false }
     func refreshSpeechState() {
         if Date().timeIntervalSince(historyLastRefresh) > 60 && !busy { refreshHistory() }
         accessibilityAllowed = insertion.permitted
