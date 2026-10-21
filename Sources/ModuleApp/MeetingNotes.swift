@@ -7,9 +7,24 @@ extension MeetingModel {
     func saveNotes(thoughts: String, summary: String, decisions: String, actions: String, reviewed: Bool) throws {
         guard let selected, let store, !summarizing else { throw VoiceProblem.message("Select a meeting before saving notes.") }
         var value = notebook ?? MeetingNotebook(meetingID: selected.id)
-        value.thoughts = thoughts; value.summary = summary; value.decisions = decisions; value.actions = actions; value.reviewed = reviewed
+        value.edit(thoughts: thoughts, summary: summary, decisions: decisions, actions: actions, reviewed: reviewed)
         try store.saveNotebook(value); notebook = value; status = "Notes saved on this Mac"
         searchLibrary()
+    }
+    func openNoteSource(_ id: String) {
+        guard !occupied, let selected, let store, let notebook,
+              let item = notebook.evidence?.first(where: { $0.id.uuidString == id }) else { return }
+        do {
+            // Reread the durable selected variant immediately before navigation.
+            let source = showingLiveTranscript ? try store.liveTranscript(selected.id, provider: asrProvider) : try store.transcript(selected.id, provider: asrProvider)
+            guard let source else { throw VoiceProblem.message("The source transcript is unavailable. Saved notes are retained.") }
+            let line = try item.resolve(in: source, digest: notebook.sourceDigest)
+            transcript = source
+            let ordered = source.utterances.sorted { $0.start == $1.start ? $0.id.uuidString < $1.id.uuidString : $0.start < $1.start }
+            transcriptPage = (ordered.firstIndex(where: { $0.id == line.id }) ?? 0) / 8
+            highlightedUtterance = line.id.uuidString; highlightedSourceText = ""; notebookPage = "transcript"; seek(line.start)
+            status = "Opened original source · playback is paused"
+        } catch { status = error.localizedDescription }
     }
     func summarize() {
         guard !occupied, canStart?() != false, let selected, let transcript, let store, !transcript.utterances.isEmpty else { status = "Transcribe this recording first."; return }

@@ -1,13 +1,13 @@
 {
   "id": "cafe.nero.plugin.voice",
   "name": "Nero Voice",
-  "version": "0.21.8",
+  "version": "0.22.1",
   "apiVersion": 1,
   "summary": "Local dictation with app styles, spoken snippets and opt-in history; organized meeting recordings and cited notes.",
   "capabilities": [
     "Records selected microphone only after dictation, meeting, Talk or reference-recording controls; no launch/hover recording",
     "Apple speech default; optional MLX ASR. Local Qwen presets, cloned references and voice descriptions; shared full/half duplex Talk, no cloud audio.",
-    "With macOS Accessibility, pastes shortcut dictation into the originally active app; never presses Send",
+    "Accessibility supports cursor dictation and selected-text local rewrite previews, exact replacement and guarded Undo; never presses Send.",
     "Per-app Clean/Formal/Literal styles and explicit spoken snippets; optional on-device grammar editing preserves saved snippet text",
     "Shows live focus-free words and recording levels in the Nook or optional bottom captions for Apple Speech and Nemotron; Parakeet transcribes after release",
     "Opt-in local text history with expiry and erase; clipboard is temporarily used and restored for insertion",

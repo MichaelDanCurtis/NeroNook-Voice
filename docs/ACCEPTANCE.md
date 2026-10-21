@@ -1,3 +1,26 @@
+**October 20 · Voice 0.22.1 installed locally:** meeting notes open as readable
+summary/decisions and source-linked action cards. Editing stays behind disclosures;
+old/manual notes retain their editor. Current-commitments generation is included;
+a stricter typed-extraction experiment regressed and was excluded. Shared SDK
+Light/Dark/compact review, 177 Swift checks, web/protocol checks and installed
+Running/signature/continuity pass. No speaker model/default or public changes.
+[Delivery and limitations](../../NeroNook/reports/voice-meeting-actions-2026-10-20/README.md).
+
+**October 20 · Voice 0.22.0 installed locally:** physical TextEdit shortcut,
+replacement and immediate Undo pass. Specific pre-write failures support explicit
+retry; uncertain writes do not. Chrome/Electron acceptance remains incomplete.
+177 Swift checks, web regressions, signed protocol and installed Running status
+pass. Preferences, placement and 36 access definitions are retained.
+[Installed evidence](../../NeroNook/reports/voice-022-acceptance-2026-10-20/README.md).
+Meeting-note quality improvements and a measured human-speaker baseline are
+separate uninstalled work: [results](../../NeroNook/reports/voice-meeting-quality-2026-10-20/README.md).
+
+## October 19 · structured meeting evidence source candidate
+
+Optional per-item source links survive notebook reopen, reject transcript/name/clock/identity changes, and are removed when their editable category changes. Old notebooks decode without migration. Six source cards per page keep the payload bounded. Combined `swift test` passes 161 tests with zero failures (including four concurrent expression checks); `swift build` and meeting web regression pass. Authored span attribution improves 6/8 to 8/8 after unique interval coverage replaces duplicate summation; this is not natural-speech DER/JER or a model-quality benchmark.
+
+Disposable nonpersistent native WebKit review passes exact source event and stale-control checks, with inspected dark/stale/light rendering. Actual host backend click, owner acceptance, semantic note support/completeness, natural speaker separation and real selected-text editing remain separate. No installed app, preference, grant, Fn path or account changed. [Full source evidence and limitations](../../NeroNook/reports/voice-improvement-2026-10-19/README.md).
+
 **October 15 · Voice 0.18.0, Teams offers and per-source speakers:** installed
 locally on host 0.32.0. Native Teams and supported browser/PWA call controls can
 produce a focus-free **Start notes / Not now** offer. Detection never records;

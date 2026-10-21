@@ -42,6 +42,9 @@ public struct DictationShortcut: Codable, Equatable, Sendable {
         if modifiers & 256 != 0 { parts += "⌘" }
         return parts + (trigger == .key ? keyLabel : "")
     }
+    public func sameBinding(as other: DictationShortcut) -> Bool {
+        trigger == other.trigger && modifiers == other.modifiers && (trigger == .modifiers || keyCode == other.keyCode)
+    }
     public static func fromLegacy(_ value: String) -> DictationShortcut? {
         switch value {
         case "Off": nil

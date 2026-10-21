@@ -4,7 +4,7 @@ let calendarRevision='',calendarProviderRevision='';
 let questionMeeting='',questionRevision='',questionSourceRevision='',lastScrolledSource='';
 let chatHistoryRevision='',lastBackendQuestion=null;
 let reviewRevision='',speakerRevision='';
-let notebookID='',notebookDirty=false,replaceConfirmed=false,liveRevision='',catchRevision='';
+let notebookID='',notebookDirty=false,replaceConfirmed=false,liveRevision='',catchRevision='',actionCardRevision='',readingRevisions={};
 const $=id=>document.getElementById(id);let s={},previousLibrary='',previousSources='',current='',scrubbing=false;
 const time=n=>{n=Math.max(0,Math.floor(n||0));return n>=3600?`${Math.floor(n/3600)}:${String(Math.floor(n/60)%60).padStart(2,'0')}:${String(n%60).padStart(2,'0')}`:`${String(Math.floor(n/60)).padStart(2,'0')}:${String(n%60).padStart(2,'0')}`;};
 function emit(name,values={}){nero.emit(name,values).catch(e=>{$('error').hidden=false;$('error').textContent=e.message||'This control is unavailable.';});}
@@ -20,7 +20,7 @@ $('showLive').onclick=()=>emit('process',{action:'showLive'});$('showRefined').o
 for(const name of ['new','refresh','pause','resume','stop','play','files','delete'])$(name).onclick=()=>{if(notebookDirty&&['new','delete'].includes(name)){$('notesSave').textContent='Save your notes before changing meetings.';return;}emit(name);};
 $('clearSearch').onclick=()=>{clearTimeout(searchTimer);$('search').value='';emit('page',{number:0,scope:'library',query:''});$('search').focus();};
 let searchTimer; $('search').oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>emit('page',{number:0,scope:'library',query:$('search').value}),250);};$('title').onchange=()=>emit('rename',{title:$('title').value});$('seek').oninput=()=>{scrubbing=true;$('position').textContent=time(+$('seek').value);};$('seek').onchange=()=>{emit('seek',{time:+$('seek').value});scrubbing=false;};
-nero.onState(next=>{s=next;if(document.activeElement!==$('search'))$('search').value=s.libraryQuery||'';const selected=!!s.selected,libraryChat=(parse(s.ask)||{}).scope==='library'&&s.notebookPage==='ask';document.body.classList.toggle('libraryChat',libraryChat);document.body.classList.toggle('savedMeeting',selected&&!s.active&&!libraryChat);$('create').hidden=selected||libraryChat;$('detail').hidden=!selected&&!libraryChat;$('badge').textContent=s.active?(s.phase==='paused'?'PAUSED':'● MEETING IN PROGRESS'):'RECORDING LIBRARY';$('badge').style.color=s.active?'#ffc0cb':'';
+nero.onState(next=>{window.NookAvatar?.setBusy?.(!!next.active||!!next.playing);s=next;if(document.activeElement!==$('search'))$('search').value=s.libraryQuery||'';const selected=!!s.selected,libraryChat=(parse(s.ask)||{}).scope==='library'&&s.notebookPage==='ask';document.body.classList.toggle('libraryChat',libraryChat);document.body.classList.toggle('savedMeeting',selected&&!s.active&&!libraryChat);$('create').hidden=selected||libraryChat;$('detail').hidden=!selected&&!libraryChat;$('badge').textContent=s.active?(s.phase==='paused'?'PAUSED':'● MEETING IN PROGRESS'):'RECORDING LIBRARY';$('badge').style.color=s.active?'#ffc0cb':'';
 if(current!==s.selected){current=s.selected;$('title').value=s.title||'';$('error').hidden=true;}
 if(document.activeElement!==$('title'))$('title').value=s.title||'';$('title').disabled=s.busy;$('clock').textContent=time(s.duration);$('micMeter').value=s.micLevel||0;$('systemMeter').value=s.systemLevel||0;document.querySelector('.meters').hidden=!s.active;
 $('pause').hidden=s.phase!=='recording';$('resume').hidden=s.phase!=='paused';$('stop').hidden=!s.active;$('stop').disabled=s.phase==='finishing';$('bookmark').hidden=s.phase!=='recording';$('play').hidden=s.active;$('play').disabled=!s.hasAudio;$('play').textContent=s.playing?'Ⅱ Pause playback':'▶ Play recording';$('playback').hidden=s.active||!s.hasAudio;
@@ -60,7 +60,7 @@ const namesKey=(s.selected||'')+s.speakers+String(s.busy);if(speakerRevision!==n
 }
 
 for(const [id,page] of [['tabTranscript','transcript'],['tabThoughts','thoughts'],['tabNotes','notes'],['tabAsk','ask']])$(id).onclick=()=>{if(notebookDirty){$('notesSave').textContent='Save your edits before changing tabs.';return;}emit('notebook',{command:'page',page});};
-for(const id of ['thoughts','summary','decisions','actions','notesReviewed'])$(id).oninput=()=>{notebookDirty=true;$('notesSave').textContent='Unsaved edits';};
+for(const id of ['thoughts','summary','decisions','actions','notesReviewed'])$(id).oninput=()=>{notebookDirty=true;$('notesSave').textContent='Unsaved edits';renderNoteEvidence();};
 $('saveNotes').onclick=()=>{const values={thoughts:$('thoughts').value,summary:$('summary').value,decisions:$('decisions').value,actions:$('actions').value,reviewed:$('notesReviewed').checked};if(Object.values(values).some(v=>typeof v==='string'&&new TextEncoder().encode(v).length>2048)){$('notesSave').textContent='Keep each field under 2 KB.';return;}emit('notebook',{command:'save',...values});notebookDirty=false;$('notesSave').textContent='Saving…';};
 $('summarize').onclick=()=>{if(notebookDirty){$('notesSave').textContent='Save your edits first.';return;}if(s.summary||s.decisions||s.actionItems){$('notesSave').textContent='Replace existing summary?';$('summarize').textContent='Replace summary draft';if(!replaceConfirmed){replaceConfirmed=true;return;}replaceConfirmed=false;}emit('notebook',{command:'summarize'});};
 $('cancelSummary').onclick=()=>emit('notebook',{command:'cancel'});$('copyNotes').onclick=()=>emit('notebook',{command:'copy',personal:$('includePersonal').checked});
@@ -70,8 +70,56 @@ function renderNotebook(){
  if(notebookID!==s.selected){notebookID=s.selected;notebookDirty=false;replaceConfirmed=false;$('notesSave').textContent='';$('includePersonal').checked=false;}
  if(!notebookDirty&&['thoughts','notes'].includes(page)){for(const [id,key] of [['thoughts','thoughts'],['summary','summary'],['decisions','decisions'],['actions','actionItems']]){if(document.activeElement!==$(id))$(id).value=s[key]||'';}$('notesReviewed').checked=!!s.notesReviewed;}
  $('saveNotes').disabled=!!s.summarizing;$('summarize').disabled=s.busy||!s.hasTranscript||!s.summaryAvailable;$('cancelSummary').hidden=!s.summarizing;
- $('summaryHint').textContent=s.summarizing?'Summarizing on this Mac…':!s.summaryAvailable?'Enable Apple Intelligence for local summaries.':s.notesStale?'Transcript changed — regenerate or review this draft.':s.notesReviewed?'Reviewed notes':'AI drafts need your review. No recording is uploaded.';
+ $('summaryHint').textContent=s.summarizing?'Summarizing on this Mac…':s.notesStale?'Transcript changed — saved source links are stale. Regenerate to update them.':!s.summaryAvailable?'Enable Apple Intelligence for local summaries.':s.notesReviewed?'Reviewed notes':'AI drafts need your review. No recording is uploaded.';
+ renderNoteEvidence();
  if(s.status==='Notes saved on this Mac'&&!notebookDirty)$('notesSave').textContent='Saved on this Mac';
+}
+function renderActionCards(){
+ const tasks=parse(s.actionCards)||[],revision=String(s.selected)+':'+JSON.stringify(tasks);
+ const structured=tasks.length>0&&!notebookDirty;
+ $('actionCardPanel').hidden=!structured;$('actionCards').replaceChildren();
+ if(actionCardRevision!==revision){actionCardRevision=revision;$('actionEditor').open=!structured;}
+ if(notebookDirty)$('actionEditor').open=true;
+ $('actionEditorLabel').textContent=tasks.length?'Edit action list':'Action items';
+ if(!structured)return;
+ for(const task of tasks){
+  const card=document.createElement('article');card.className='actionCard';
+  const title=document.createElement('strong');title.textContent=task.task;
+  const words=document.createElement('details');const label=document.createElement('summary');label.textContent='Original words';
+  const quote=document.createElement('blockquote');quote.textContent=task.quote;words.append(label,quote);
+  const source=document.createElement('button');source.textContent=`Source · ${time(task.start)} · ${task.track==='mic'?'room':'call'}`;
+  source.disabled=!!s.notesStale||!!s.busy||notebookDirty;
+  source.onclick=()=>{if(s.notesStale||s.busy||notebookDirty)return;emit('notebook',{command:'noteSource',citation:task.id});};
+  card.append(title,words,source);$('actionCards').append(card);
+ }
+}
+function renderNotesReading(){
+ for(const id of ['summary','decisions']){
+  const text=s[id]||'',revision=String(s.selected)+':'+text,edited=notebookDirty&&$(id).value!==text;
+  const editor=$(id+'Editor'),reading=$(id+'Reading');
+  if(readingRevisions[id]!==revision&&!notebookDirty){readingRevisions[id]=revision;editor.open=false;}
+  reading.hidden=edited||!text;reading.textContent=text;
+  if(edited)editor.open=true;
+  $(id+'EditorLabel').textContent=(text?'Edit ':'Add ')+id;
+ }
+}
+function renderNoteEvidence(){
+ renderNotesReading();
+ renderActionCards();
+ const items=parse(s.noteEvidence)||[];$('noteEvidencePanel').hidden=!items.length;$('noteEvidence').replaceChildren();
+ const paging=parse(s.noteEvidencePaging)||{};const page=+paging.page||0,pages=+paging.pages||1;
+ $('noteEvidencePage').textContent=`${page+1} / ${pages}`;$('noteEvidencePrevious').disabled=page<=0||notebookDirty;$('noteEvidenceNext').disabled=page+1>=pages||notebookDirty;
+ $('noteEvidencePrevious').onclick=()=>{if(!notebookDirty)emit('notebook',{command:'noteEvidencePage',offset:page-1});};$('noteEvidenceNext').onclick=()=>{if(!notebookDirty)emit('notebook',{command:'noteEvidencePage',offset:page+1});};
+ $('noteEvidenceHint').textContent=s.notesStale?'These quotes belong to an earlier transcript. Regenerate to open current sources.':notebookDirty?'Save your edits before opening a source. Edited sections lose their generated links.':'Check each claim against the original words. Speaker labels do not establish a person’s identity.';
+ for(const item of items){
+  const card=document.createElement('article');card.className='noteEvidenceCard';
+  const label=document.createElement('small');label.textContent=({summary:'Summary',decisions:'Decision',actions:'Action item'})[item.section]||'Note';
+  const fact=document.createElement('p');fact.textContent=item.fact;
+  const quote=document.createElement('blockquote');quote.textContent=item.quote;
+  const source=document.createElement('button');source.textContent=`Open ${time(item.start)} · ${item.track==='mic'?'room audio':'call audio'}`;source.disabled=!!s.notesStale||!!s.busy||notebookDirty;
+  source.onclick=()=>{if(notebookDirty||s.notesStale)return;emit('notebook',{command:'noteSource',citation:item.id});};
+  card.append(label,fact,quote,source);$('noteEvidence').append(card);
+ }
 }
 
 $('bookmark').onclick=()=>emit('process',{action:'bookmark'});

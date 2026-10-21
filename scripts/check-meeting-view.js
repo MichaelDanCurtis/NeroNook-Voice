@@ -15,7 +15,7 @@ const sources=[{id:'s1',label:'00:00:08 · Microphone',text:'Launch is Friday.'}
 const state={selected:'synthetic-meeting',hasTranscript:true,notebookPage:'ask',library:'[]',sources:'[]',transcript:'[]',speakers:'{}',
   ask:JSON.stringify({busy:false,question:'When is launch?',provider:'test.assistant/answer_evidence',providers:[{id:'test.assistant/answer_evidence',title:'Test assistant'}],prepared:true,coverage:'Full settled transcript',sources,
     answer:{disposition:'answered',statements:[{text:'Friday.',citations:['s1']}]}})};
-const context={document,TextEncoder,setTimeout,clearTimeout,nero:{onState(fn){callback=fn;fn({});fn(state);},emit(name,values){emitted.push({name,values});return Promise.resolve();}}};
+const context={window:{},document,TextEncoder,setTimeout,clearTimeout,nero:{onState(fn){callback=fn;fn({});fn(state);},emit(name,values){emitted.push({name,values});return Promise.resolve();}}};
 vm.runInNewContext(fs.readFileSync('Resources/Views/meetings/meeting.js','utf8'),context);
 assert.equal(typeof elements.get('tabAsk').onclick,'function');
 elements.get('tabAsk').onclick();assert.equal(emitted.pop().values.page,'ask');
@@ -24,6 +24,36 @@ elements.get('meetingQuestion').value='When is launch?';elements.get('meetingQue
 const answer=elements.get('meetingAnswer'), citation=answer.children[1].children[1].children[0];citation.onclick();assert.equal(emitted.pop().values.citation,'s1');
 callback({...state,ask:JSON.stringify({busy:false,providers:[],sources:[],prepared:false})});assert.equal(elements.get('meetingAnswer').hidden,true);
 console.log('PASS: synchronous bootstrap, Ask control bindings, changed-question guard, citation events, no empty answer');
+
+const noteItem={id:'authored-note-id',section:'decisions',fact:'Thursday was agreed.',quote:'We agreed Thursday.',start:13,track:'system'};
+const noteState={...state,notebookPage:'notes',noteEvidence:JSON.stringify([noteItem]),noteEvidencePaging:JSON.stringify({page:0,pages:2,count:7}),notesStale:false,summaryAvailable:true};
+callback(noteState);
+let noteCard=elements.get('noteEvidence').children[0];
+assert.equal(noteCard.children[1].textContent,noteItem.fact);assert.equal(noteCard.children[2].textContent,noteItem.quote);
+noteCard.children[3].onclick();assert.equal(emitted.pop().values.citation,noteItem.id);
+elements.get('noteEvidenceNext').onclick();assert.equal(emitted.pop().values.offset,1);
+callback({...noteState,notesStale:true,summaryAvailable:false});
+assert.equal(elements.get('noteEvidence').children[0].children[3].disabled,true);
+assert(elements.get('summaryHint').textContent.includes('stale'));
+callback(noteState);elements.get('summary').value='My manual revision';elements.get('summary').oninput();
+assert.equal(elements.get('noteEvidence').children[0].children[3].disabled,true);
+const beforeDirtyClick=emitted.length;elements.get('noteEvidence').children[0].children[3].onclick();assert.equal(emitted.length,beforeDirtyClick);
+elements.get('saveNotes').onclick();
+console.log('PASS: structured note source event, stale/unavailable precedence, unsaved edit navigation guard');
+const task={id:'task-source',task:'Dana will send the draft on Friday.',quote:'I will send the draft on Friday.',start:8,track:'system'};
+const taskState={...noteState,selected:'task-meeting',actionCards:JSON.stringify([task]),actionItems:'[00:08] Dana will send the draft on Friday.'};
+callback(taskState);let taskCard=elements.get('actionCards').children[0];
+assert.equal(elements.get('actionCardPanel').hidden,false);assert.equal(elements.get('actionEditor').open,false);
+assert.equal(taskCard.children[0].textContent,task.task);assert.equal(taskCard.children[1].children[1].textContent,task.quote);
+taskCard.children[2].onclick();assert.equal(emitted.pop().values.citation,'task-source');
+callback({...taskState,notesStale:true});taskCard=elements.get('actionCards').children[0];assert.equal(taskCard.children[2].disabled,true);
+let taskEvents=emitted.length;taskCard.children[2].onclick();assert.equal(emitted.length,taskEvents);
+callback({...taskState,busy:true});elements.get('actionCards').children[0].children[2].onclick();assert.equal(emitted.length,taskEvents);
+callback(taskState);elements.get('actions').value='Manual revision';elements.get('actions').oninput();
+assert.equal(elements.get('actionCardPanel').hidden,true);assert.equal(elements.get('actionEditor').open,true);
+elements.get('saveNotes').onclick();callback({...taskState,selected:'legacy-notes',actionCards:'[]'});
+assert.equal(elements.get('actionCardPanel').hidden,true);assert.equal(elements.get('actionEditor').open,true);
+console.log('PASS: action-source identity and exact quote, stale/busy guards, manual-edit and legacy fallback');
 // A changed source/date must not leave selectable rows from the previous list.
 const calendar={open:true,busy:false,day:'2026-10-13',provider:'test.calendar/list',providers:[{id:'test.calendar/list',title:'Test calendar'},{id:'test.other/list',title:'Other calendar'}],events:[{id:'0',title:'Design review',when:'9 AM',calendar:'Test'}],status:'Choose the exact meeting occurrence.',next:6,total:7};
 callback({...state,calendar:JSON.stringify(calendar)});

@@ -3,7 +3,7 @@ function emit(name,values){nero.emit(name,values).catch(e=>{$('status').textCont
 $('provider').onchange=()=>emit('provider',{value:$('provider').value});
 for(const id of ['qwenStudio','prepareQwen','releaseQwen','preload','release_preload','prepare','record','cancel','copy','clear','read','preview','speechSettings'])$(id).onclick=()=>{if(document.activeElement===$('text'))$('text').blur();emit('command',{value:id});};
 $('text').oninput=()=>emit('edit',{text:$('text').value});
-nero.onState(s=>{state=s;$('inputMeter').hidden=!s.recording;$('inputMeter').value=s.recording ? (s.level||0):0;$('preload').disabled=s.busy||s.speaking||!s.ready||s.warmReady;$('release_preload').hidden=!s.warmReady&&!s.warmBusy;$('warmStatus').textContent=s.warmStatus||'Microphone off';$('provider').value=s.provider;$('provider').disabled=s.busy;$('model').hidden=s.ready;$('prepare').disabled=s.busy;$('shortcut').textContent=s.shortcut;$('hint').textContent=s.style==='hold'?'Hold, speak, release to paste.':'Press to start. Press again to paste.';if(document.activeElement!==$('text')||s.busy)$('text').value=s.text||'';$('text').disabled=s.busy;$('status').textContent=s.status;$('record').textContent=s.recording?'Stop dictation':'Record draft here';$('record').disabled=s.busy&&!s.recording||!s.ready;$('cancel').disabled=!s.busy;$('copy').disabled=s.busy||!s.text;$('clear').disabled=s.busy;});
+nero.onState(s=>{window.NookAvatar?.setBusy?.(!!s.busy||!!s.recording||(!!s.speaking&&!s.reactionSpeaking));state=s;$('inputMeter').hidden=!s.recording;$('inputMeter').value=s.recording ? (s.level||0):0;$('preload').disabled=s.busy||s.speaking||!s.ready||s.warmReady;$('release_preload').hidden=!s.warmReady&&!s.warmBusy;$('warmStatus').textContent=s.warmStatus||'Microphone off';$('provider').value=s.provider;$('provider').disabled=s.busy;$('model').hidden=s.ready;$('prepare').disabled=s.busy;$('shortcut').textContent=s.shortcut;$('hint').textContent=s.style==='hold'?'Hold, speak, release to paste.':'Press to start. Press again to paste.';if(document.activeElement!==$('text')||s.busy)$('text').value=s.text||'';$('text').disabled=s.busy;$('status').textContent=s.status;$('record').textContent=s.recording?'Stop dictation':'Record draft here';$('record').disabled=s.busy&&!s.recording||!s.ready;$('cancel').disabled=!s.busy;$('copy').disabled=s.busy||!s.text;$('clear').disabled=s.busy;});
 nero.onState(s=>{$('speechVoice').textContent=s.speechVoice||'System voice';$('preview').textContent=s.speaking?'Stop reading':'Preview voice';$('read').textContent=s.speaking?'Stop reading':'Read draft';$('preview').disabled=s.busy;$('read').disabled=s.busy||(!s.speaking&&!s.text);$('speechSettings').disabled=s.busy;$('cancel').disabled=!s.busy&&!s.speaking;});
 
 let personalState={}, appRevision='', snippetListRevision='', historyRevision='', selectedSnippetID='', selectedHistoryID='', snippetDirty=false, appToneDirty=false, appSeen='', snippetRemoval=false;
@@ -58,8 +58,8 @@ $('qwenSpeaker').onchange=()=>emit('speech',{speaker:$('qwenSpeaker').value});
 nero.onState(s=>{
  $('speechBackend').value=s.speechBackend||'apple';$('speechBackend').disabled=!!s.busy;
  $('qwenControls').hidden=s.speechBackend!=='qwen';$('qwenSpeaker').value=s.qwenSpeaker||'Ryan';$('qwenSpeaker').disabled=!!s.busy||!!s.qwenMode&&s.qwenMode!=='preset';$('qwenStudio').disabled=!!s.busy;
- $('prepareQwen').textContent=s.qwenReady?'Prepare Qwen':'Download Qwen · 3.08 GB';$('prepareQwen').disabled=!!s.busy||!!s.speaking;
- $('releaseQwen').disabled=!!s.busy||!!s.speaking;
+ $('prepareQwen').textContent=s.qwenReady?'Prepare Qwen':'Download Qwen · 3.08 GB';$('prepareQwen').disabled=!!s.busy||(!!s.speaking&&!s.reactionSpeaking);
+ $('releaseQwen').disabled=!!s.busy||(!!s.speaking&&!s.reactionSpeaking);
  const unavailable=s.speechBackend==='qwen'&&!s.qwenReady;
  $('preview').disabled=!!s.busy||unavailable;$('read').disabled=!!s.busy||(!s.speaking&&(!s.text||unavailable));
 });
@@ -70,9 +70,11 @@ nero.onState(s=>{
  let devices=[];try{devices=JSON.parse(s.microphones||'[]');}catch{}
  const key=JSON.stringify(devices);if($('microphoneChoice').dataset.devices!==key){$('microphoneChoice').dataset.devices=key;$('microphoneChoice').replaceChildren(new Option('System default',''));for(const d of devices)$('microphoneChoice').add(new Option(d.name,d.id));}
  $('microphoneChoice').value=s.microphone||'';$('microphoneChoice').disabled=!!s.busy;
- $('dictationHeading').textContent=s.recording?'Listening…':s.busy?'Finishing your words…':'Your voice, in any app.';
+ $('dictationHeading').textContent=s.recording?'Listening…':s.rewriting?'Review your selected text.':s.busy?'Finishing your words…':'Your voice, in any app.';
  $('text').hidden=!s.recording&&!s.text;$('draftActions').hidden=!!s.busy||!s.text;
  $('stopDictation').hidden=!s.recording;$('cancel').hidden=!s.busy&&!s.speaking;
  $('status').hidden=!s.busy&&!s.speaking&&!/(error|failed|unavailable|permission|allow|could not|download|needed|not ready)/i.test(s.status||'');
 });
 for(const id of ['tabDictate','tabStyles','tabSnippets','tabHistory','speechSettings','record']){const handler=$(id).onclick;$(id).onclick=()=>{$('dictationMenu').open=false;handler();};}
+
+nero.onState(s=>{$('rewriteHint').textContent=s.rewriteConflict?'Rewrite shortcut conflicts with dictation. Choose another in Voice settings.':s.rewriteShortcut&&s.rewriteShortcut!=='Off'?'Select text in another app, then press '+s.rewriteShortcut+' to rewrite.':'Selected-text editing is off. Set a shortcut in Voice settings.';});

@@ -1,3 +1,24 @@
+**October 20 · Voice 0.22.1 installed locally:** meeting notes open as readable
+summary/decisions and source-linked action cards. Editing stays behind disclosures;
+old/manual notes retain their editor. Current-commitments generation is included;
+a stricter typed-extraction experiment regressed and was excluded. Shared SDK
+Light/Dark/compact review, 177 Swift checks, web/protocol checks and installed
+Running/signature/continuity pass. No speaker model/default or public changes.
+[Delivery and limitations](../NeroNook/reports/voice-meeting-actions-2026-10-20/README.md).
+
+**October 20 · Voice 0.22.0 installed locally:** physical TextEdit shortcut,
+replacement and immediate Undo pass. Specific pre-write failures support explicit
+retry; uncertain writes do not. Chrome/Electron acceptance remains incomplete.
+177 Swift checks, web regressions, signed protocol and installed Running status
+pass. Preferences, placement and 36 access definitions are retained.
+[Installed evidence](../NeroNook/reports/voice-022-acceptance-2026-10-20/README.md).
+Meeting-note quality improvements and a measured human-speaker baseline are
+separate uninstalled work: [results](../NeroNook/reports/voice-meeting-quality-2026-10-20/README.md).
+
+**October 20 · local 0.21.11:** avatar tickle and playful Zoom use the current local speech selection through the shared SDK, with measured mouths, exact cancellation and a silent Wave/Twirl menu. Existing voice settings and action scopes are retained. [Installed checks and limits](../NeroNook/reports/avatar-playful-reactions-2026-10-20/README.md). Local only.
+
+**October 19 · local source candidate:** generated meeting summaries, decisions and actions retain structured original-passage links, with exact source freshness checks and six-item source review pages. Manual section edits remove their generated links. Duplicate same-speaker spans no longer inflate attribution coverage. Combined Voice checks pass 161 tests and build; disposable native WebKit notes review passes. Selected-text rewriting remains a focused proposal, and real meeting quality remains unscored. No installation or public release. [Evidence and limits](../NeroNook/reports/voice-improvement-2026-10-19/README.md).
+
 **October 19 · local 0.21.7 installed:** shared native/web avatar articulation adds larger pointer-following turns, tilt, lean and a floating offset. Eyes and speech remain independent. [Qualification and limits](../NeroNook/reports/avatar-articulation-2026-10-19/README.md). Local only.
 
 **October 19 · local candidate 0.21.6:** shared avatar eyes/head follow the same-display pointer independently of speech. Built and tested; installation pending the owner's open-chat decision. [Evidence](../NeroNook/reports/avatar-pointer-2026-10-19/README.md).

@@ -28,6 +28,7 @@ import NookPluginSDK
     private var accumulator = PluginCatalogAccumulator()
     private var meetingReads: [UUID: Task<Void, Never>] = [:]
     private var spokenRequest: UUID?
+    private var speechMeter:Task<Void,Never>?
     private var seen = Set<UUID>()
     private var timer: Timer?
     private var qwenCloseObserver: NSObjectProtocol?
@@ -44,6 +45,7 @@ import NookPluginSDK
             else if phase == .idle { update = .init(.cancelled, message: "Reading stopped"); self.spokenRequest = nil }
             else { update = .init(.running, message: phase == .preparing ? "Preparing local speech" : "Reading aloud") }
             self.bus(.init(.update, requestID: id, update: update))
+            if update.phase.terminal {self.speechMeter?.cancel();self.speechMeter=nil}
         }
         conversation.send = { [weak self] in self?.bus($0) }
         conversation.changed = { [weak self] in guard let self else{return};self.model.status=self.conversation.status;self.publish() }
@@ -58,7 +60,7 @@ import NookPluginSDK
             }
         }
         meetings.changed = { [weak self] in self?.publish() }
-        meetings.canStart = { [weak self] in guard let self else { return false }; return !self.conversation.active && !self.model.session.recording && !self.model.waiting && !self.model.preparingAssets && !self.model.inserting && !self.model.polishing && !self.model.speaking }
+        meetings.canStart = { [weak self] in guard let self else { return false }; return !self.model.rewrite.active && !self.conversation.active && !self.model.session.recording && !self.model.waiting && !self.model.preparingAssets && !self.model.inserting && !self.model.polishing && !self.model.speaking }
         meetings.microphone = { [weak self] in self?.model.microphone ?? "" }
         meetings.locale = { [weak self] in self?.model.locale ?? "en-US" }
         if !test { meetings.startCallDetection() }
@@ -160,6 +162,7 @@ import NookPluginSDK
                             conversation.stop();showMicrophoneWindow()
                             self.bus(.init(.update,requestID:bus.requestID,update:.init(.succeeded,message:"Voice settings opened")));return
                         }
+                        model.stopReaction()
                         try conversation.start(bus.requestID,values:values,preferences:model,available:!model.busy && !model.speaking && !meetings.occupied)
                         return
                     }
@@ -177,6 +180,15 @@ import NookPluginSDK
                         // Attach ownership after the renderer's synchronous stop/start,
                         // so its previous session cannot finish this new request.
                         try model.speakShared(text); spokenRequest = bus.requestID
+                        if model.avatarPlayback != nil {
+                            let id=bus.requestID
+                            speechMeter?.cancel()
+                            speechMeter=Task{[weak self] in while !Task.isCancelled {
+                                try? await Task.sleep(for:.milliseconds(100))
+                                guard !Task.isCancelled,let self,self.spokenRequest==id else{return}
+                                self.bus(.init(.update,requestID:id,update:.init(.running,message:"Character reaction",speech:self.model.speechPresentation)))
+                            }}
+                        }
                         self.bus(.init(.update, requestID: bus.requestID, update: .init(.running, message: "Preparing local speech")))
                         return
                     }
@@ -216,10 +228,11 @@ import NookPluginSDK
         let status = meetings.occupied ? meetings.status : model.status
         // Custom panels already expose their own recording and stop controls.
         // Keep the host action row only for the older declarative fallback.
-        let snapshot = PluginSnapshot(title: "Nero Voice", status: String(status.prefix(200)), activity: String(status.prefix(100)), actions: customViews ? [] : actions, badge: meetings.active ? "Meeting" : model.session.phase == .listening ? "Recording" : "On-device", panels: [
+        var snapshot = PluginSnapshot(title: "Nero Voice", status: String(status.prefix(200)), activity: String(status.prefix(100)), actions: customViews ? [] : actions, badge: meetings.active ? "Meeting" : model.session.phase == .listening ? "Recording" : "On-device", panels: [
             customViews ? .init("voice", "Dictate", customView: model.voiceDefinition) : .init("voice", "Dictate", sections: sections, forms: model.session.recording ? nil : [form]),
             customViews ? .init("meetings", "Meetings", customView: meetings.definition) : .init("meetings", "Meetings", sections: [.init("Meeting recordings", "Open Nero Voice for meeting recording, bookmarks and playback.")])
         ])
+        snapshot.avatarInteractionBusy = model.busy || (model.speaking && model.avatarPlayback == nil) || conversation.active || meetings.occupied || meetings.playing
         do { try snapshot.validate(); emit("snapshot", snapshot: snapshot) }
         catch { emit("snapshot", snapshot: PluginSnapshot(title: "Nero Voice", status: "Voice view unavailable. Open settings or stop the current activity.", actions: [.init("cancel", "Stop activity", enabled: true, symbol: "stop.fill")], sections: [.init("Display issue", String(error.localizedDescription.prefix(200)))])) }
         publishCaption()
@@ -277,6 +290,10 @@ struct VoiceSettings: View {
                 inputSettings.disabled(model.busy)
                 PluginSettingsSection("Conversation interruptions") { InterruptionSensitivityView(value: $model.interruptionSensitivity) }
                 dictationSettings.disabled(model.busy)
+                PluginSettingsSection("Selected-text editing") {
+                    ShortcutRecorder(model: model, rewrite: true)
+                    Text("Highlight text in an editable field, then use this shortcut. Review a local rewrite before Replace; Cancel changes nothing. Exact Undo is available while the text and cursor are unchanged. Unsupported fields keep a copyable draft. No audio or cloud provider is used.").font(.caption).pluginSecondaryText().fixedSize(horizontal: false, vertical: true)
+                }.disabled(model.busy)
                 outputSettings.disabled(model.busy)
                 PluginAdvancedSection(detail: "Conversation timing and model preparation affect Talk. Hold-to-dictate still ends when you release the shortcut.") {
                 HStack {

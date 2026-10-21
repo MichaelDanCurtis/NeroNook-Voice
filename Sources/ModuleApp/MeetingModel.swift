@@ -61,6 +61,7 @@ import NookPluginSDK
     var cancelQuestionInvocation: ((UUID) -> Void)?
     @Published var notebook: MeetingNotebook?
     @Published var notebookPage = "transcript"
+    var noteEvidencePage = 0
     @Published var searchIDs: Set<UUID>?
     var searchTask: Task<Void, Never>?
     var summaryTask: Task<Void, Never>?

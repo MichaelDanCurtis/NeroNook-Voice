@@ -5,6 +5,7 @@ import Combine
 import ModuleCore
 import VoiceAudio
 import NookPluginSDK
+import VoiceEditing
 
 @MainActor final class VoiceModel: ObservableObject {
     @Published var personalization = DictationPersonalization()
@@ -118,6 +119,34 @@ import NookPluginSDK
         return speechVoices.first { $0.language == locale } ?? AVSpeechSynthesisVoice(language: locale)
     }
     var speechVoiceName: String { if speechBackend == .qwen { return "Qwen3 · " + (qwenOptions.mode == .preset ? qwenSpeaker.rawValue : qwenOptions.mode == .design ? "Designed voice" : qwenProfiles.first(where: { $0.id == qwenOptions.cloneID })?.name ?? "Choose cloned voice") }; return voiceID == AppleSpeechOutput.voice2Identifier ? "Apple · American English · Voice 2" : selectedSpeechVoice?.name ?? "Voice unavailable" }
+    private var reactionOutput:ConversationAudio?
+    private var reactionID:UUID?
+    private var startingReaction=false
+    private var reactionKind:PluginAvatarReaction?
+    private var reactionMeter:Task<Void,Never>?
+    private var outputPhase:SpeechPlayback.Phase = .idle
+    var avatarPlayback:PluginAvatarPlayback? {
+        guard let id=reactionID,let kind=reactionKind,speaking else{return nil}
+        return .init(id:id,kind:kind,speech:speechPresentation)
+    }
+    var speechPresentation:PluginSpeechPlayback {
+        .init(outputPhase == .speaking ? .speaking:.preparing,level:outputPhase == .speaking ? (reactionOutput?.playbackLevel ?? 0):0)
+    }
+    func stopReaction(_ id:UUID?=nil) {if reactionID != nil,(id == nil || id == reactionID){stopSpeaking()}}
+    func react(_ kind:PluginAvatarReaction,id:UUID) throws {
+        guard kind.hasAudio else{return}
+        try speakShared(kind.spokenText,reactionID:id)
+    }
+    func handleAvatar(_ event:PluginViewEvent) throws {
+        try voiceDefinition.validate(event)
+        guard case .string(let raw)=event.values["id"],let id=UUID(uuidString:raw),case .string(let kind)=event.values["kind"] else{throw VoiceProblem.message("Invalid avatar gesture")}
+        if kind == "stop"{stopReaction(id)}else if let kind=PluginAvatarReaction(rawValue:kind){try react(kind,id:id)}
+        changed?()
+    }
+    private func clearReaction() {
+        reactionID=nil;reactionKind=nil;reactionMeter?.cancel();reactionMeter=nil
+        speaker.engineOutput=nil;reactionOutput?.stop();reactionOutput=nil
+    }
     var speechPhaseChanged: ((SpeechPlayback.Phase, String?) -> Void)?
     func chooseSpeechVoice(_ id: String) { stopSpeaking(); voiceID = id; changed?() }
     @Published var selectedKey = UserDefaults.standard.string(forKey: "assistant") ?? "" {
@@ -144,6 +173,15 @@ import NookPluginSDK
     private var assetGeneration = UUID()
     private let speaker = SpeechOutput()
     private let hotkey = PushToTalk()
+    private let rewriteHotkey = PushToTalk(id: 2)
+    let rewrite = SelectionRewrite(editor: AXSelectionEditor(), generate: SelectionTransformer.transform)
+    private lazy var rewriteWindow = SelectionRewriteWindow(model: rewrite)
+    @Published private(set) var rewriteShortcut: DictationShortcut? = {
+        if UserDefaults.standard.bool(forKey: "rewriteShortcutOff") { return nil }
+        if let data = UserDefaults.standard.data(forKey: "rewriteShortcutBinding"),
+           let saved = try? JSONDecoder().decode(DictationShortcut.self, from: data), saved.valid, saved.trigger == .key { return saved }
+        return .init(keyCode: 15, modifiers: 4096 | 2048, keyLabel: "R")
+    }()
     private var observations = Set<AnyCancellable>()
     private var lifecycleObservers: [NSObjectProtocol] = []
     private var outgoing: UUID?
@@ -171,7 +209,7 @@ import NookPluginSDK
     private(set) var inputLevel = 0.0
     private var levelTask: Task<Void, Never>?
     private var captionFault = false
-    var busy: Bool { referenceChecking || referenceSaving || referenceRecording || appPicker != nil || session.recording || waiting || preparingAssets || polishing || inserting || meetingActive?() == true }
+    var busy: Bool { rewrite.active || referenceChecking || referenceSaving || referenceRecording || appPicker != nil || session.recording || waiting || preparingAssets || polishing || inserting || meetingActive?() == true }
     var transientCaption: PluginTransientCaption? {
         guard usesHostCaption, captionVisible else { return nil }
         let words = !captionResult && session.phase == .preparing ? "" : overlayText ?? session.transcript
@@ -191,6 +229,7 @@ import NookPluginSDK
         loadPersonalization()
         speaker.changed = { [weak self] phase, error in
             guard let self else { return }
+            self.outputPhase=phase
             let wasSpeaking = self.speaking
             self.speaking = phase == .preparing || phase == .speaking
             if let error { self.status = error }
@@ -198,12 +237,19 @@ import NookPluginSDK
             else if phase == .speaking { self.status = "Reading aloud · \(self.speechVoiceName)" }
             else if phase == .finished { self.status = "Reading finished" }
             else if phase == .idle && wasSpeaking { self.status = "Reading stopped" }
+            if !self.speaking,self.reactionID != nil,!self.startingReaction {self.clearReaction()}
             self.speechPhaseChanged?(phase, error)
             self.changed?()
         }
         objectWillChange.sink { [weak self] _ in Task { @MainActor in self?.changed?() } }.store(in: &observations)
         hotkey.cancelled = { [weak self] in self?.cancel(); self?.status = "Shortcut interrupted · no text pasted" }
         hotkey.pressed = { [weak self] in self?.shortcutPressed() }
+        rewriteHotkey.pressed = { [weak self] in self?.beginSelectionRewrite() }
+        rewrite.changed = { [weak self] in
+            guard let self else { return }
+            if !self.rewrite.active { self.rewriteWindow.hide() }
+            self.objectWillChange.send(); self.changed?()
+        }
         hotkey.released = { [weak self] in
             guard let self else { return }
             if self.shortcutState.release(style: self.shortcutStyle) == .stop { self.stopRecording() }
@@ -269,17 +315,49 @@ import NookPluginSDK
     func requestInsertionPermission() { insertion.requestPermission(); accessibilityAllowed = insertion.permitted }
     func dismissOverlay() { if session.recording || inserting { cancel() }; overlayCompletion?.cancel(); overlay.hide() }
     var shortcutName: String { shortcut?.displayName ?? "Off" }
-    func configureHotkey() { guard !CommandLine.arguments.contains("--protocol-test"), Bundle.main.object(forInfoDictionaryKey: "NeroLiveFixtureAudio") == nil else { return }; do { try hotkey.configure(shortcut) } catch { status = error.localizedDescription } }
-    func pauseShortcutForRecording() { hotkey.stop() }
+    func configureHotkey() {
+        guard !CommandLine.arguments.contains("--protocol-test"), Bundle.main.object(forInfoDictionaryKey: "NeroLiveFixtureAudio") == nil else { return }
+        do { try hotkey.configure(shortcut) } catch { status = error.localizedDescription }
+        do {
+            if rewriteShortcutConflict { rewriteHotkey.stop(); status = "Rewrite conflicts with dictation. Choose a different shortcut in Voice settings." }
+            else { try rewriteHotkey.configure(rewriteShortcut) }
+        } catch { status = error.localizedDescription }
+    }
+    var rewriteShortcutConflict: Bool { if let rewriteShortcut, let shortcut { return rewriteShortcut.sameBinding(as: shortcut) }; return false }
+    var rewriteShortcutName: String { rewriteShortcutConflict ? "Conflict · choose another shortcut" : rewriteShortcut?.displayName ?? "Off" }
+    func pauseShortcutForRecording() { hotkey.stop(); rewriteHotkey.stop() }
     func resumeShortcutAfterRecording() { configureHotkey() }
+    func beginSelectionRewrite() {
+        if rewrite.active { rewriteWindow.show(); return }
+        guard !busy, !speaking else { status = "Finish the current Voice activity before Rewrite."; changed?(); return }
+        do {
+            try rewrite.begin() // Capture BEFORE bringing the review window forward.
+            rewriteWindow.show()
+        } catch { status = error.localizedDescription; changed?() }
+    }
+    func chooseRewriteShortcut(_ candidate: DictationShortcut?) {
+        guard !busy else { return }
+        guard candidate == nil || (candidate!.valid && candidate!.trigger == .key && !(shortcut.map { candidate!.sameBinding(as: $0) } ?? false)) else {
+            status = "Use a key combination different from dictation for Rewrite."; configureHotkey(); return
+        }
+        do {
+            try rewriteHotkey.configure(candidate)
+            rewriteShortcut = candidate
+            UserDefaults.standard.set(candidate == nil, forKey: "rewriteShortcutOff")
+            UserDefaults.standard.set(candidate.flatMap { try? JSONEncoder().encode($0) }, forKey: "rewriteShortcutBinding")
+            configureHotkey(); status = candidate.map { "Rewrite shortcut set to \($0.displayName)" } ?? "Rewrite shortcut off"
+        } catch { configureHotkey(); status = error.localizedDescription }
+    }
     func chooseShortcut(_ candidate: DictationShortcut?) {
         guard !busy else { return }
+        guard candidate == nil || !(rewriteShortcut.map { candidate!.sameBinding(as: $0) } ?? false) else { status = "Choose different shortcuts for dictation and Rewrite."; configureHotkey(); return }
         guard candidate?.valid ?? true else { status = "Choose Fn, modifiers, a key combination or an F-key."; configureHotkey(); return }
         do {
             try hotkey.configure(candidate)
             shortcut = candidate
             UserDefaults.standard.set(candidate.flatMap { try? JSONEncoder().encode($0) }, forKey: "dictationShortcutBinding")
             UserDefaults.standard.set(candidate == nil ? "Off" : "Custom", forKey: "shortcut")
+            configureHotkey()
             status = candidate.map { "Dictation shortcut set to \($0.displayName)" } ?? "Dictation shortcut off"
         } catch {
             configureHotkey()
@@ -463,6 +541,7 @@ import NookPluginSDK
         }
     }
     func cancel() {
+        rewrite.close()
         cancelReference()
         speaker.shutdown()
         preloader.release()
@@ -529,9 +608,36 @@ import NookPluginSDK
         guard !busy, !CommandLine.arguments.contains("--protocol-test") else { return }
         do { try renderSpeech(text) } catch { status = error.localizedDescription; changed?() }
     }
-    func speakShared(_ text: String) throws {
+    func speakShared(_ text: String,reactionID requestedID:UUID?=nil) throws {
         guard !busy, !speaking, meetingActive?() != true, !CommandLine.arguments.contains("--protocol-test") else { throw VoiceProblem.message("Voice is busy. Finish the current activity first.") }
-        try renderSpeech(text)
+        let reaction=PluginAvatarReaction.allCases.first{$0.hasAudio && $0.spokenText == text}
+        startingReaction=reaction != nil;defer{startingReaction=false}
+        if let reaction {
+            reactionKind=reaction;reactionID=requestedID ?? UUID()
+            let output=ConversationAudio();try output.startOutput();reactionOutput=output;speaker.engineOutput=output
+        }
+        do {
+            if reaction != nil {
+                var options=qwenOptions
+                if speechBackend == .qwen,options.mode == .preset {
+                    let cue="Speak playfully with a happy smiling voice and light natural giggles. Keep the words clear."
+                    if options.instruction.utf8.count+cue.utf8.count+1<=512 {options.instruction += (options.instruction.isEmpty ? "":" ")+cue}
+                }
+                try speaker.speak(text,backend:speechBackend,voiceID:voiceID,appleVoice:selectedSpeechVoice,qwenSpeaker:qwenSpeaker,locale:locale,delivery:speechDelivery,qwenOptions:options)
+            } else {try renderSpeech(text)}
+        } catch {clearReaction();throw error}
+        if let reaction {
+            let id=reactionID
+            reactionMeter=Task{[weak self] in
+                let start=Date()
+                while !Task.isCancelled {
+                    try? await Task.sleep(for:.milliseconds(100))
+                    guard !Task.isCancelled,let self,self.reactionID==id else{return}
+                    if Date().timeIntervalSince(start)>40 || self.meetingActive?() == true || self.busy {self.stopReaction();return}
+                    self.changed?()
+                }
+            }
+        }
     }
     func releaseSpeakingModel() { speaker.shutdown(); status = "Speaking model released · downloaded files retained"; changed?() }
     func prepareQwen() {
@@ -555,7 +661,7 @@ import NookPluginSDK
     }
     func readDraft() { speakText(session.transcript) }
     func previewSpeech() { speakText("Welcome back. We have time to review your notes, or we can pick up right where we left off. What would you like to do?") }
-    func stopSpeaking() { speaker.stop(); speaking = false }
+    func stopSpeaking() { speaker.stop(); clearReaction(); speaking = false }
     func refreshSpeechState() {
         if Date().timeIntervalSince(historyLastRefresh) > 60 && !busy { refreshHistory() }
         accessibilityAllowed = insertion.permitted
@@ -566,5 +672,5 @@ import NookPluginSDK
             status = "\(dictationASR == .parakeet ? "Listening with Parakeet" : "Listening") · \(device) · input \(Int(signal.level * 100))%"
         }
     }
-    func shutdown() { cancel(); discardReferenceSource(); speaker.shutdown(); insertion.shutdown(); overlay.hide(); hotkey.stop(); lifecycleObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) } }
+    func shutdown() { cancel(); discardReferenceSource(); speaker.shutdown(); insertion.shutdown(); overlay.hide(); hotkey.stop(); rewriteHotkey.stop(); lifecycleObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) } }
 }

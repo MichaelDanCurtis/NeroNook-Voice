@@ -4,15 +4,15 @@ import NookPluginSDK
 
 extension VoiceModel {
     var voiceDefinition: PluginCustomView {
-        PluginCustomView(entry: "dictate/index.html", revision: "voice_22", state: [
+        var view = PluginCustomView(entry: "dictate/index.html", revision: "voice_23", state: [
             "microphone": .string(microphone),
             "microphones": .string(String(data: (try? JSONEncoder().encode(microphones.map { ["id": $0.id, "name": $0.displayName] })) ?? Data(), encoding: .utf8) ?? "[]"),
             "personal": .string(String(data: (try? JSONEncoder().encode(personalizationViewState)) ?? Data(), encoding: .utf8) ?? "{}"),
             "warmReady": .boolean(preloader.ready), "warmBusy": .boolean(preloader.preparing), "warmStatus": .string(preloader.status),
             "provider": .string(dictationASR.rawValue), "ready": .boolean(selectedModelReady),
-            "busy": .boolean(busy), "recording": .boolean(session.recording), "level": .number(inputLevel),
+            "busy": .boolean(busy), "rewriting": .boolean(rewrite.active), "recording": .boolean(session.recording), "level": .number(inputLevel),
             "status": .string(String(status.prefix(400))), "text": .string(session.transcript),
-            "shortcut": .string(shortcutName), "shortcutPreset": .string(shortcut == .standard ? "fn" : shortcut == .optionCommand ? "optionCommand" : "custom"), "captionPlacement": .string(captionPlacement.rawValue), "style": .string(shortcutStyle == .hold ? "hold" : "toggle"),
+            "shortcut": .string(shortcutName), "rewriteShortcut": .string(rewriteShortcutName), "rewriteConflict": .boolean(rewriteShortcutConflict), "shortcutPreset": .string(shortcut == .standard ? "fn" : shortcut == .optionCommand ? "optionCommand" : "custom"), "captionPlacement": .string(captionPlacement.rawValue), "style": .string(shortcutStyle == .hold ? "hold" : "toggle"),
             "preparing": .boolean(preparingAssets), "speaking": .boolean(speaking),
             "speechBackend": .string(speechBackend.rawValue), "qwenMode": .string(qwenOptions.mode.rawValue), "qwenSpeaker": .string(qwenSpeaker.rawValue), "qwenReady": .boolean(qwenReady),
             "speechVoice": .string(String(speechVoiceName.prefix(80))), "speechDelivery": .string(speechDelivery.rawValue)
@@ -26,9 +26,13 @@ extension VoiceModel {
             .init("command", input: .init([.init("value", .string)])),
             .init("edit", input: .init([.init("text", .string)]))
         ], ownsChrome: true)
+        view.avatarReactions=true;view.avatarPlayback=avatarPlayback
+        view.state["reactionSpeaking"] = .boolean(avatarPlayback != nil)
+        return view
     }
     func handleVoice(_ event: PluginViewEvent) throws {
         guard event.panelID == "voice" else { throw VoiceProblem.message("Unknown voice view") }
+        if event.name == PluginAvatarPlayback.event {try handleAvatar(event);return}
         try voiceDefinition.validate(event)
         guard !CommandLine.arguments.contains("--protocol-test") else { return }
         if event.name == "microphone", case .string(let value) = event.values["value"] {

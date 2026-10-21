@@ -81,7 +81,11 @@ public struct MeetingTranscript: Codable, Sendable {
     public mutating func assign(_ spans: [MeetingSpeakerSpan], track: String) throws {
         guard ["mic", "system"].contains(track), spans.count <= 100000,
               spans.allSatisfy({ $0.start.isFinite && $0.end.isFinite && $0.start >= 0 && $0.end >= $0.start && $0.end <= 4 * 3600 + 30 && (0..<8).contains($0.speaker) }) else { throw VoiceProblem.message("Invalid speaker analysis") }
-        let sorted = spans.sorted { $0.start < $1.start }
+        // Providers may return overlapping pieces for the same speaker at a
+        // streaming/final boundary. Count each instant once for that speaker;
+        // duplicate spans must not manufacture dominant coverage. Cross-speaker
+        // overlap is retained so ambiguous speech remains unassigned.
+        let sorted = Self.unionSpeakerSpans(spans)
         // Split unreviewed, word-aligned phrases when the dominant speaker changes.
         // Never guess word timing from text length or overwrite a manual correction.
         var splitCursor = 0
@@ -130,6 +134,19 @@ public struct MeetingTranscript: Codable, Sendable {
             } else { utterances[index].speaker = nil }
         }
         if !labelledTracks.contains(track) { labelledTracks.append(track) }; try validate()
+    }
+    private static func unionSpeakerSpans(_ spans: [MeetingSpeakerSpan]) -> [MeetingSpeakerSpan] {
+        var result: [MeetingSpeakerSpan] = []
+        for speaker in Set(spans.map(\.speaker)).sorted() {
+            var merged: [MeetingSpeakerSpan] = []
+            for span in spans.filter({ $0.speaker == speaker }).sorted(by: { $0.start < $1.start }) where span.end > span.start {
+                if let prior = merged.last, span.start <= prior.end {
+                    merged[merged.count - 1].end = max(prior.end, span.end)
+                } else { merged.append(span) }
+            }
+            result.append(contentsOf: merged)
+        }
+        return result.sorted { $0.start == $1.start ? $0.speaker < $1.speaker : $0.start < $1.start }
     }
 }
 extension MeetingStore {

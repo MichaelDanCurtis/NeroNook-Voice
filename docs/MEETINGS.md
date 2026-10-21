@@ -1,3 +1,19 @@
+## Local 0.22.1 · review meeting notes
+
+Choose a saved recording → **Summary & actions** → **Create local summary**.
+Summary and Decisions are readable text; **Edit summary**, **Add/Edit decisions**
+and **Edit action list** reveal the existing editors. Each generated action card
+has **Original words** and **Source**. Source opens that exact transcript passage
+with playback paused; stale sources and unsaved edits block navigation.
+
+Local summaries use Apple Intelligence with no audio upload. Drafts still need
+review of meaning, owners, dates and cancellations; valid source links do not
+prove correctness. Old saved notebooks stay unchanged until explicitly edited
+or regenerated. Microphone, speech models, meeting chat and My thoughts retain
+their existing separate controls. Source cards do not create or execute tasks.
+
+[Checks and known quality gaps](../../NeroNook/reports/voice-meeting-actions-2026-10-20/README.md).
+
 # Nero Voice: dictation and meetings
 
 **Implementation update:** the 0.3.0 recording and post-recording review preview is now implemented. See README.md and ACCEPTANCE.md for current behavior and actual evidence; the discussion below retains the broader desired scope. New provider direction is in MODELS.md.
