@@ -46,8 +46,8 @@ import ModuleCore
             if changed == "selection" { editor.range = NSRange(location: 0, length: 0) }
             if changed == "identity" { editor.currentID = UUID() }
             let before = editor.value; model.apply(); await settle(model)
-            XCTAssertEqual(model.phase, .blocked); XCTAssertEqual(editor.value, before); XCTAssertEqual(editor.writes, 0)
-            XCTAssertFalse(model.canApply); XCTAssertFalse(model.canUndo); model.close()
+            XCTAssertEqual(model.phase, .reviewing); XCTAssertEqual(editor.value, before); XCTAssertEqual(editor.writes, 0)
+            XCTAssertTrue(model.canApply); XCTAssertFalse(model.canUndo); model.close()
         }
     }
     func testLaterEditingInvalidatesUndo() async throws {
@@ -73,6 +73,17 @@ import ModuleCore
         let editor = try Editor(); let model = SelectionRewrite(editor: editor) { _, _ in "new" }
         try model.begin(); model.close(); XCTAssertEqual(editor.focusReturns, 0)
         try model.begin(); model.close(returnToEditor: true); XCTAssertEqual(editor.focusReturns, 1); XCTAssertEqual(editor.writes, 0)
+    }
+    func testPrewriteFocusFailureCanBeRetriedOnlyByAnotherExplicitApply() async throws {
+        let editor = try Editor(); editor.prewriteFailure = true
+        let model = SelectionRewrite(editor: editor) { _, _ in "new" }
+        try model.begin(); model.result = "new"; model.apply(); await settle(model)
+        XCTAssertEqual(model.phase, .reviewing); XCTAssertEqual(editor.writes, 0)
+        editor.prewriteFailure = false
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(editor.writes, 0)
+        model.apply(); await settle(model)
+        XCTAssertEqual(model.phase, .applied); XCTAssertEqual(editor.writes, 1); model.close()
     }
     func testUnavailableModelKeepsManualPreview() async throws {
         let editor = try Editor(); let model = SelectionRewrite(editor: editor) { _, _ in throw SelectionProblem.unavailable }
@@ -123,13 +134,14 @@ import ModuleCore
 
 @MainActor private final class Editor: SelectionEditor {
     var value: String; var range: NSRange
-    var currentID = UUID(); var writes = 0; var forgets = 0; var delay = false; var entered = false; var unverified = false; var focusReturns = 0
+    var currentID = UUID(); var writes = 0; var forgets = 0; var delay = false; var entered = false; var unverified = false; var focusReturns = 0; var prewriteFailure = false
     init(value: String = "original", range: NSRange = NSRange(location: 0, length: 8)) throws { self.value = value; self.range = range }
     func capture() throws -> SelectionCapture { try SelectionCapture(id: currentID, app: "Authored editor", value: value, range: range) }
     func replace(_ capture: SelectionCapture, with text: String) async throws -> DictationEdit {
         entered = true
         if delay { try await Task.sleep(for: .milliseconds(100)) }
         try Task.checkCancellation()
+        if prewriteFailure { throw SelectionProblem.activeAppChanged }
         guard capture.id == currentID, capture.value == value, capture.range == range,
               let edit = DictationEdit(value: value, selection: range, insertion: text) else { throw SelectionProblem.changed }
         value = edit.after; range = edit.caret; writes += 1

@@ -1,10 +1,11 @@
-**October 20 · local 0.22.0 source candidate:** select text in another app and
-press Control–Option–R for a local rewrite preview. Configurable shortcut,
-Rephrase/Clarify/tone/writing choices, guarded exact replacement and Undo; no
-countdown, microphone or cloud provider. 176 Swift checks and native Light/Dark
-preview pass. The separate AX probe lacks Accessibility permission, so actual
-editor/shortcut acceptance and installation remain pending; installed 0.21.12
-is retained. [Usage](docs/SELECTED-TEXT.md) · [evidence](../NeroNook/reports/voice-selected-text-2026-10-20/README.md).
+**October 20 · Voice 0.22.0 installed locally:** physical TextEdit shortcut,
+replacement and immediate Undo pass. Specific pre-write failures support explicit
+retry; uncertain writes do not. Chrome/Electron acceptance remains incomplete.
+177 Swift checks, web regressions, signed protocol and installed Running status
+pass. Preferences, placement and 36 access definitions are retained.
+[Installed evidence](../NeroNook/reports/voice-022-acceptance-2026-10-20/README.md).
+Meeting-note quality improvements and a measured human-speaker baseline are
+separate uninstalled work: [results](../NeroNook/reports/voice-meeting-quality-2026-10-20/README.md).
 
 **October 20 · local 0.21.11:** avatar tickle and playful Zoom use the current local speech selection through the shared SDK, with measured mouths, exact cancellation and a silent Wave/Twirl menu. Existing voice settings and action scopes are retained. [Installed checks and limits](../NeroNook/reports/avatar-playful-reactions-2026-10-20/README.md). Local only.
 

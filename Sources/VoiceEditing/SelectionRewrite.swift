@@ -82,7 +82,9 @@ public extension SelectionEditor { func restoreFocus() {} }
                 edit = verified; phase = .applied; status = "Replaced in \(capture.app). Undo is available until you edit or move the cursor."
             } catch {
                 guard epoch == token, phase == .applying else { return }
-                edit = nil; phase = .blocked; status = error.localizedDescription
+                edit = nil
+                phase = (error as? SelectionProblem)?.allowsExplicitRetry == true ? .reviewing : .blocked
+                status = error.localizedDescription
             }
             changed?()
         }

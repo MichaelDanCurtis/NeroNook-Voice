@@ -31,12 +31,24 @@ public struct SelectionCapture: Equatable, Sendable {
 }
 
 public enum SelectionProblem: LocalizedError {
-    case invalidSelection, changed, undoChanged, unsupported, permission, unavailable, timeout, unverified, invalidResult
+    case invalidSelection, changed, undoChanged, activeAppChanged, activationFailed, windowChanged, fieldChanged, valueChanged, rangeChanged, unsupported, permission, unavailable, timeout, unverified, invalidResult
+    public var allowsExplicitRetry: Bool {
+        switch self {
+        case .changed, .activeAppChanged, .activationFailed, .windowChanged, .fieldChanged, .valueChanged, .rangeChanged, .permission: true
+        default: false
+        }
+    }
     public var errorDescription: String? {
         switch self {
         case .invalidSelection: "Highlight some text first (up to 6 KB), then use the Rewrite shortcut."
         case .changed: "The original text, selection or window changed. Nothing was replaced. Copy the result if you want to use it."
         case .undoChanged: "The text, cursor or window changed after replacement. Undo was not applied; the original selection is kept here for review."
+        case .activeAppChanged: "Another app is active. Bring this Rewrite window forward before trying Replace again. Nothing was changed."
+        case .activationFailed: "macOS could not return focus to the original editor. Nothing was changed. Bring that editor forward without moving its selection, then try again."
+        case .windowChanged: "The original window is no longer selected. No further changes were made."
+        case .fieldChanged: "The original text field no longer has focus. No further changes were made."
+        case .valueChanged: "The original text changed. No further changes were made."
+        case .rangeChanged: "The selection or cursor moved. No further changes were made."
         case .unsupported: "This field does not support exact selected-text editing. Use dictation or copy a draft instead."
         case .permission: "Allow Nero Voice in macOS Accessibility to edit selected text."
         case .unavailable: "Apple Intelligence is unavailable. You can edit the preview yourself; nothing is sent to the cloud."

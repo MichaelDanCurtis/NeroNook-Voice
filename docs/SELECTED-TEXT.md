@@ -1,8 +1,8 @@
-# Selected-text editing · local 0.22.0 candidate
+# Selected-text editing · local 0.22.0
 
 This is a separately invoked Voice capability, not an agent action or a new
-dictation mode. The installed 0.21.12 build is retained while this candidate is
-qualified. No public package or catalog update is authorized.
+dictation mode. Version 0.22.0 is installed locally. No public package or catalog
+update is authorized.
 
 Highlight text in another app, then press **Control–Option–R** once. The shortcut
 captures the selection before opening the review window. Choose Rephrase,
@@ -45,8 +45,12 @@ neither another automatic replacement nor a verified Undo.
 Automated checks cover state, UTF-16, cancellation, expiry, stale values/ranges,
 model failure and uncertain readback. The review window has been inspected in
 Light and Dark, and an authored passage was rewritten by the real local model.
-The disposable cross-process AX probe lacks Accessibility permission; it has
-not verified actual replacement/Undo. No permission was granted to that probe.
-Physical shortcut and native/browser/Electron editor acceptance remain required
-before installation. Model output still needs human review for meaning, names,
-numbers, negation and commitments.
+Real TextEdit capture from the physical shortcut, exact replacement and immediate
+Undo pass, including Unicode surroundings. Early focus refusals remain documented.
+Chrome captured text but refused before writing when inactive AX focus changed;
+the activation follow-up and VS Code/Electron still need acceptance. Unsupported
+editors keep a copyable preview; no clipboard or whole-field replacement fallback
+is offered. Known pre-write refusals allow an explicit new Replace click, with
+all checks repeated. Model output needs human review for meaning, names, numbers,
+negation and commitments. See the host's
+`reports/voice-022-acceptance-2026-10-20/README.md` for the installed evidence.

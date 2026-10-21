@@ -17,7 +17,8 @@ import ModuleCore
     public func restoreFocus() {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier,
               let target, let app = NSRunningApplication(processIdentifier: target.pid), !app.isTerminated else { return }
-        app.activate()
+        NSApp.yieldActivation(to: app)
+        _ = app.activate(from: .current, options: [])
     }
     public func capture() throws -> SelectionCapture {
         forget()
@@ -49,6 +50,7 @@ import ModuleCore
         let target: Target
         do { target = try await prepare(capture, value: edit.after, range: edit.caret) }
         catch SelectionProblem.changed { throw SelectionProblem.undoChanged }
+        catch let error as SelectionProblem { throw VoiceProblem.message("Undo was not applied. " + error.localizedDescription) }
         try Task.checkCancellation()
         try select(edit.insertedRange, in: target.element)
         guard let current = try? contents(target.element), current.0 == edit.after, current.1 == edit.insertedRange else { throw SelectionProblem.unverified }
@@ -60,30 +62,39 @@ import ModuleCore
     private func prepare(_ capture: SelectionCapture, value: String, range: NSRange) async throws -> Target {
         guard AXIsProcessTrusted() else { throw SelectionProblem.permission }
         guard let target, target.capture == capture else { throw SelectionProblem.changed }
-        try validate(target, value: value, range: range)
         let foreground = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        guard foreground == target.pid || foreground == ProcessInfo.processInfo.processIdentifier else { throw SelectionProblem.changed }
+        guard foreground == target.pid || foreground == ProcessInfo.processInfo.processIdentifier else { throw SelectionProblem.activeAppChanged }
+        // Chromium reports its web area as focused while inactive. Check the
+        // retained exact field before activation, then require focused-field
+        // identity after the editor is active; never substitute another field.
+        try validate(target, value: value, range: range, requireFocus: foreground == target.pid)
         guard let app = NSRunningApplication(processIdentifier: target.pid), !app.isTerminated else { throw SelectionProblem.changed }
         // Return to the exact original editor automatically; no five-second
         // countdown or requirement to click the selection again.
-        if foreground != target.pid { app.activate() }
+        if foreground != target.pid {
+            NSApp.yieldActivation(to: app)
+            guard app.activate(from: .current, options: []) else { throw SelectionProblem.activationFailed }
+        }
         for _ in 0..<20 {
             try Task.checkCancellation()
             if NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid { break }
             try await Task.sleep(for: .milliseconds(25))
         }
         try Task.checkCancellation()
-        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid else { throw SelectionProblem.changed }
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid else { throw SelectionProblem.activationFailed }
         try validate(target, value: value, range: range)
         return target
     }
-    private func validate(_ target: Target, value: String, range: NSRange) throws {
+    private func validate(_ target: Target, value: String, range: NSRange, requireFocus: Bool = true) throws {
         let ax = application(target.pid)
-        guard let window = element(ax, kAXFocusedWindowAttribute), CFEqual(window, target.window),
-              let field = element(ax, kAXFocusedUIElementAttribute), CFEqual(field, target.element) else { throw SelectionProblem.changed }
-        try checkField(field)
-        let current = try contents(field)
-        guard current.0 == value, current.1 == range else { throw SelectionProblem.changed }
+        guard let window = element(ax, kAXFocusedWindowAttribute), CFEqual(window, target.window) else { throw SelectionProblem.windowChanged }
+        if requireFocus {
+            guard let field = element(ax, kAXFocusedUIElementAttribute), CFEqual(field, target.element) else { throw SelectionProblem.fieldChanged }
+        }
+        try checkField(target.element)
+        let current = try contents(target.element)
+        guard current.0 == value else { throw SelectionProblem.valueChanged }
+        guard current.1 == range else { throw SelectionProblem.rangeChanged }
     }
     private func checkField(_ field: AXUIElement) throws {
         AXUIElementSetMessagingTimeout(field, 0.25)
