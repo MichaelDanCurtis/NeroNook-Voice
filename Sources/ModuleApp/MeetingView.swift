@@ -49,6 +49,9 @@ extension MeetingModel {
             "organization": .string(json(organizationViewState)), "calendar": .string(json(calendarView)), "ask": .string(json(ask)), "highlight": .string(highlightedUtterance),
             "notebookPage": .string(notebookPage), "thoughts": .string(showNotes ? notebook?.thoughts ?? "" : ""), "summary": .string(showNotes ? notebook?.summary ?? "" : ""),
             "decisions": .string(showNotes ? notebook?.decisions ?? "" : ""), "actionItems": .string(showNotes ? notebook?.actions ?? "" : ""), "notesReviewed": .boolean(notebook?.reviewed ?? false),
+            "actionCards": .string(json(showNotes ? evidenceItems.filter { $0.section == .actions }.prefix(12).map {
+                ["id": $0.id.uuidString, "task": $0.fact, "quote": $0.quote, "start": String($0.start), "track": $0.track]
+            } : [])),
             "noteEvidence": .string(json(showNotes ? evidenceItems.dropFirst(evidencePage * 6).prefix(6).map { ["id": $0.id.uuidString, "section": $0.section.rawValue, "fact": $0.fact, "quote": $0.quote, "start": String($0.start), "track": $0.track] } : [])),
             "noteEvidencePaging": .string(json(["page": evidencePage, "pages": max(1, (evidenceItems.count + 5) / 6), "count": evidenceItems.count])),
             "liveEnabled": .boolean(liveEnabled), "liveStatus": .string(liveStatus), "liveDraft": .boolean(showingLiveTranscript),
@@ -76,6 +79,12 @@ extension MeetingModel {
         state["callOffer"] = .string(json(["enabled": callOffersEnabled ? "yes" : "no", "id": callOffer?.id.uuidString ?? "", "app": callOffer?.signal.appName ?? "", "title": callOffer?.signal.evidence == .microphoneActivity ? "Teams microphone in use" : "Teams call detected", "scope": callOffer?.signal.browserWide == true ? "Microphone + browser audio (all tabs)" : "Microphone + Teams audio"]))
         state["speakerState"] = .string(json(["enabled": speakerSeparation ? "yes" : "no", "status": speakerStatus, "ready": speakersReady ? "yes" : "no"]))
         state.merge(detailState) { _, new in new }
+        // Cards duplicate saved action text for reading. Keep the existing
+        // editable list if that optional presentation would exceed the generic
+        // SDK state budget; never drop notes or widen the plugin contract.
+        if let data = try? JSONEncoder().encode(state), data.count > 32_768 {
+            state["actionCards"] = .string("[]")
+        }
         let events: [PluginViewEventDefinition] = [
             .init("notebook", input: .init([.init("command", .string), .init("page", .string, required: false), .init("thoughts", .string, required: false), .init("summary", .string, required: false), .init("decisions", .string, required: false), .init("actions", .string, required: false), .init("reviewed", .boolean, required: false), .init("personal", .boolean, required: false), .init("seconds", .number, required: false), .init("question", .string, required: false), .init("provider", .string, required: false), .init("citation", .string, required: false), .init("date", .string, required: false), .init("offset", .number, required: false), .init("event", .string, required: false), .init("enabled", .boolean, required: false)])),
             .init("record", input: .init([.init("title", .string), .init("mic", .boolean), .init("source", .string), .init("live", .boolean)])),

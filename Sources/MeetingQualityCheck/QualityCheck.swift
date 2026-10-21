@@ -9,6 +9,14 @@ import VoiceAudio
     struct Fixture: Decodable { let id: String; let names: [String: String]; let turns: [[String?]] }
     struct Receipt: Codable { let fixture: String; let inputSHA256: String; let seconds: Double; let notebook: MeetingNotebook?; let resolvedSources: Int; let error: String? }
     static func main() async throws {
+        if Bundle.main.bundleIdentifier == "cafe.nero.review.meeting-tasks", let url = Bundle.main.resourceURL?.appendingPathComponent("MeetingReview.json") {
+            let paths = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: url))
+            guard let resources = paths["resources"], let output = paths["output"] else { return }
+            try await MeetingViewReview.run(resources: URL(fileURLWithPath: resources), output: URL(fileURLWithPath: output)); return
+        }
+        if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "--view" {
+            try await MeetingViewReview.run(resources: URL(fileURLWithPath: CommandLine.arguments[2]), output: URL(fileURLWithPath: CommandLine.arguments[3])); return
+        }
         guard CommandLine.arguments.count == 3 else { print("Usage: MeetingQualityCheck frozen-gold.json output-directory"); return }
         let input = URL(fileURLWithPath: CommandLine.arguments[1]), output = URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true)
         let bytes = try Data(contentsOf: input)

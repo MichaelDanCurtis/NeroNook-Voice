@@ -8,7 +8,7 @@ let package = Package(name: "NeroVoice", platforms: [.macOS("26.0")], products: 
  .target(name: "VoiceAudio", dependencies: ["ModuleCore"]),
  .target(name: "VoiceEditing", dependencies: ["ModuleCore", .product(name: "NookPluginSDK", package: "NookPluginSDK")]),
  .executableTarget(name: "SelectionReview", dependencies: ["VoiceEditing", "VoiceAudio", "ModuleCore"]),
- .executableTarget(name: "MeetingQualityCheck", dependencies: ["VoiceAudio", "ModuleCore"]),
+ .executableTarget(name: "MeetingQualityCheck", dependencies: ["VoiceAudio", "ModuleCore", .product(name: "NookPluginSDK", package: "NookPluginSDK")]),
  .executableTarget(name: "ModuleApp", dependencies: ["ModuleCore", "VoiceAudio", "VoiceEditing", .product(name: "NookPluginSDK", package: "NookPluginSDK")]),
  .executableTarget(name: "PluginCheck", dependencies: [.product(name: "NookPluginSDK", package: "NookPluginSDK")]),
  .executableTarget(name: "SpeechCheck", dependencies: ["VoiceAudio"]),

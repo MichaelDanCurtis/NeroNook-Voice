@@ -40,6 +40,20 @@ assert.equal(elements.get('noteEvidence').children[0].children[3].disabled,true)
 const beforeDirtyClick=emitted.length;elements.get('noteEvidence').children[0].children[3].onclick();assert.equal(emitted.length,beforeDirtyClick);
 elements.get('saveNotes').onclick();
 console.log('PASS: structured note source event, stale/unavailable precedence, unsaved edit navigation guard');
+const task={id:'task-source',task:'Dana will send the draft on Friday.',quote:'I will send the draft on Friday.',start:8,track:'system'};
+const taskState={...noteState,selected:'task-meeting',actionCards:JSON.stringify([task]),actionItems:'[00:08] Dana will send the draft on Friday.'};
+callback(taskState);let taskCard=elements.get('actionCards').children[0];
+assert.equal(elements.get('actionCardPanel').hidden,false);assert.equal(elements.get('actionEditor').open,false);
+assert.equal(taskCard.children[0].textContent,task.task);assert.equal(taskCard.children[1].children[1].textContent,task.quote);
+taskCard.children[2].onclick();assert.equal(emitted.pop().values.citation,'task-source');
+callback({...taskState,notesStale:true});taskCard=elements.get('actionCards').children[0];assert.equal(taskCard.children[2].disabled,true);
+let taskEvents=emitted.length;taskCard.children[2].onclick();assert.equal(emitted.length,taskEvents);
+callback({...taskState,busy:true});elements.get('actionCards').children[0].children[2].onclick();assert.equal(emitted.length,taskEvents);
+callback(taskState);elements.get('actions').value='Manual revision';elements.get('actions').oninput();
+assert.equal(elements.get('actionCardPanel').hidden,true);assert.equal(elements.get('actionEditor').open,true);
+elements.get('saveNotes').onclick();callback({...taskState,selected:'legacy-notes',actionCards:'[]'});
+assert.equal(elements.get('actionCardPanel').hidden,true);assert.equal(elements.get('actionEditor').open,true);
+console.log('PASS: action-source identity and exact quote, stale/busy guards, manual-edit and legacy fallback');
 // A changed source/date must not leave selectable rows from the previous list.
 const calendar={open:true,busy:false,day:'2026-10-13',provider:'test.calendar/list',providers:[{id:'test.calendar/list',title:'Test calendar'},{id:'test.other/list',title:'Other calendar'}],events:[{id:'0',title:'Design review',when:'9 AM',calendar:'Test'}],status:'Choose the exact meeting occurrence.',next:6,total:7};
 callback({...state,calendar:JSON.stringify(calendar)});

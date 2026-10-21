@@ -4,7 +4,7 @@ let calendarRevision='',calendarProviderRevision='';
 let questionMeeting='',questionRevision='',questionSourceRevision='',lastScrolledSource='';
 let chatHistoryRevision='',lastBackendQuestion=null;
 let reviewRevision='',speakerRevision='';
-let notebookID='',notebookDirty=false,replaceConfirmed=false,liveRevision='',catchRevision='';
+let notebookID='',notebookDirty=false,replaceConfirmed=false,liveRevision='',catchRevision='',actionCardRevision='',readingRevisions={};
 const $=id=>document.getElementById(id);let s={},previousLibrary='',previousSources='',current='',scrubbing=false;
 const time=n=>{n=Math.max(0,Math.floor(n||0));return n>=3600?`${Math.floor(n/3600)}:${String(Math.floor(n/60)%60).padStart(2,'0')}:${String(n%60).padStart(2,'0')}`:`${String(Math.floor(n/60)).padStart(2,'0')}:${String(n%60).padStart(2,'0')}`;};
 function emit(name,values={}){nero.emit(name,values).catch(e=>{$('error').hidden=false;$('error').textContent=e.message||'This control is unavailable.';});}
@@ -74,7 +74,38 @@ function renderNotebook(){
  renderNoteEvidence();
  if(s.status==='Notes saved on this Mac'&&!notebookDirty)$('notesSave').textContent='Saved on this Mac';
 }
+function renderActionCards(){
+ const tasks=parse(s.actionCards)||[],revision=String(s.selected)+':'+JSON.stringify(tasks);
+ const structured=tasks.length>0&&!notebookDirty;
+ $('actionCardPanel').hidden=!structured;$('actionCards').replaceChildren();
+ if(actionCardRevision!==revision){actionCardRevision=revision;$('actionEditor').open=!structured;}
+ if(notebookDirty)$('actionEditor').open=true;
+ $('actionEditorLabel').textContent=tasks.length?'Edit action list':'Action items';
+ if(!structured)return;
+ for(const task of tasks){
+  const card=document.createElement('article');card.className='actionCard';
+  const title=document.createElement('strong');title.textContent=task.task;
+  const words=document.createElement('details');const label=document.createElement('summary');label.textContent='Original words';
+  const quote=document.createElement('blockquote');quote.textContent=task.quote;words.append(label,quote);
+  const source=document.createElement('button');source.textContent=`Source · ${time(task.start)} · ${task.track==='mic'?'room':'call'}`;
+  source.disabled=!!s.notesStale||!!s.busy||notebookDirty;
+  source.onclick=()=>{if(s.notesStale||s.busy||notebookDirty)return;emit('notebook',{command:'noteSource',citation:task.id});};
+  card.append(title,words,source);$('actionCards').append(card);
+ }
+}
+function renderNotesReading(){
+ for(const id of ['summary','decisions']){
+  const text=s[id]||'',revision=String(s.selected)+':'+text,edited=notebookDirty&&$(id).value!==text;
+  const editor=$(id+'Editor'),reading=$(id+'Reading');
+  if(readingRevisions[id]!==revision&&!notebookDirty){readingRevisions[id]=revision;editor.open=false;}
+  reading.hidden=edited||!text;reading.textContent=text;
+  if(edited)editor.open=true;
+  $(id+'EditorLabel').textContent=(text?'Edit ':'Add ')+id;
+ }
+}
 function renderNoteEvidence(){
+ renderNotesReading();
+ renderActionCards();
  const items=parse(s.noteEvidence)||[];$('noteEvidencePanel').hidden=!items.length;$('noteEvidence').replaceChildren();
  const paging=parse(s.noteEvidencePaging)||{};const page=+paging.page||0,pages=+paging.pages||1;
  $('noteEvidencePage').textContent=`${page+1} / ${pages}`;$('noteEvidencePrevious').disabled=page<=0||notebookDirty;$('noteEvidenceNext').disabled=page+1>=pages||notebookDirty;

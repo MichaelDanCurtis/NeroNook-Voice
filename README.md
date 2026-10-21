@@ -1,3 +1,11 @@
+**October 20 · Voice 0.22.1 installed locally:** meeting notes open as readable
+summary/decisions and source-linked action cards. Editing stays behind disclosures;
+old/manual notes retain their editor. Current-commitments generation is included;
+a stricter typed-extraction experiment regressed and was excluded. Shared SDK
+Light/Dark/compact review, 177 Swift checks, web/protocol checks and installed
+Running/signature/continuity pass. No speaker model/default or public changes.
+[Delivery and limitations](../NeroNook/reports/voice-meeting-actions-2026-10-20/README.md).
+
 **October 20 · Voice 0.22.0 installed locally:** physical TextEdit shortcut,
 replacement and immediate Undo pass. Specific pre-write failures support explicit
 retry; uncertain writes do not. Chrome/Electron acceptance remains incomplete.
