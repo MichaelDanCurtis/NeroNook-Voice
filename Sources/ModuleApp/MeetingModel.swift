@@ -200,7 +200,10 @@ import NookPluginSDK
                 }
                 var value = meeting; value.state = "recording"; value.issue = ""
                 try Task.checkCancellation(); guard generation == token else { throw CancellationError() }
-                let writer = try MeetingAudioWriter(store: store, meeting: value,
+                // Attach before the first captured frame. Model preparation
+                // consumes this bounded opening queue once it is ready.
+                let openingFeed = liveEnabled ? MeetingLiveAudioFeed(bufferingLimit: 512) : nil
+                let writer = try MeetingAudioWriter(store: store, meeting: value, liveFeed: openingFeed,
                     speakerFeed: liveSpeakerReady ? liveSpeakerService?.feed : nil); self.writer = writer
                 let capture = MeetingCapture(); self.capture = capture
                 started = ProcessInfo.processInfo.systemUptime
@@ -211,7 +214,7 @@ import NookPluginSDK
                     let state = writer.snapshot(); if let error = state.error { throw VoiceProblem.message(error) }
                     if (!value.microphone || state.last["mic"] != nil) && (value.source == "none" || state.last["system"] != nil) {
                         phase = "recording"; status = "Recording · saved on this Mac"
-                        prepareAnalysis(value, writer: writer, generation: generation)
+                        prepareAnalysis(value, writer: writer, generation: generation, openingFeed: openingFeed)
                         return
                     }
                     try await Task.sleep(for: .milliseconds(50))
@@ -220,19 +223,16 @@ import NookPluginSDK
             } catch { if generation == token { finish(paused: false, issue: error.localizedDescription) } }
         }
     }
-    private func prepareAnalysis(_ meeting: Meeting, writer: MeetingAudioWriter, generation: UUID) {
+    private func prepareAnalysis(_ meeting: Meeting, writer: MeetingAudioWriter, generation: UUID, openingFeed: MeetingLiveAudioFeed?) {
         livePreparing = true
         if liveEnabled { liveStatus = "Audio is recording · preparing local live words…" }
         analysisTask = Task { [weak self] in
             guard let self else { return }
             do {
-                try await self.beginLive(meeting)
+                try await self.beginLive(meeting, feed: openingFeed ?? MeetingLiveAudioFeed())
                 try Task.checkCancellation()
                 guard self.token == generation, self.phase == "recording" else { return }
                 writer.attachLiveFeed(self.liveService?.feed)
-                if self.liveService != nil, writer.snapshot().duration > meeting.duration + 0.5 {
-                    self.liveStatus += " · Earlier audio is saved; Transcribe the recording for its opening words."
-                }
                 self.livePreparing = false; self.analysisTask = nil
                 self.beginSpeakerSession(meeting)
             } catch {

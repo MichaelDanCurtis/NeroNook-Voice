@@ -27,3 +27,14 @@ signs every Mach-O with the same stable app identity and records the archive's
 SHA-256. It keeps Python's license and wheel distribution metadata/licenses.
 The app verifies that hash before extraction. No independent user Python is
 consulted. Public release still requires the normal license/notarization review.
+
+
+The Voice-owned `activity.py` postprocessor adds 40 ms edge coverage at the
+existing 0.50 threshold. It delays commitment by four frames and flushes the tail;
+no earlier timestamp is revised. Both file and streaming workers use it with
+independent per-track state. This is outside the unchanged vendored model source.
+The more aggressive development hysteresis setting was rejected and is not used.
+Production invocation uses isolated Python (`-I -B`); worker imports explicitly
+resolve only its bundled directory and Vendor. Tests include the exact isolated
+process path and independently scored public human audio; this is not full-corpus
+or live-call qualification.

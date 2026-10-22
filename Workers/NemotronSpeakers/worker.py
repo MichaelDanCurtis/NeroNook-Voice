@@ -3,9 +3,11 @@ import json
 import os
 from pathlib import Path
 import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'Vendor'))
 import mlx.core as mx
 import numpy as np
+from activity import SpeakerActivity
 from mlx_audio.vad.models.nemotron_diarization.config import ModelConfig
 from mlx_audio.vad.models.nemotron_diarization.nemotron_diarization import Model
 
@@ -20,12 +22,14 @@ def main():
     mx.eval(model.parameters())
     state = model.init_streaming_state()
     segments = []
-    def collect(result):
+    activity = SpeakerActivity()
+    def collect(result, final=False):
         duration = size / 64000
-        for s in result.segments:
-            start, end = max(0, float(s.start)), min(duration, float(s.end))
+        spans, _ = activity.feed(np.array(result.speaker_probs), final=final)
+        for s in spans:
+            start, end = max(0, s["start"]), min(duration, s["end"])
             if end > start:
-                segments.append(dict(start=start, end=end, speaker=int(s.speaker)))
+                segments.append(dict(start=start, end=end, speaker=s["speaker"]))
         if len(segments) > 100000:
             raise ValueError('Speaker segment limit')
     # State and speaker identities persist across all chunks, including final flush.
@@ -35,7 +39,7 @@ def main():
             collect(result)
             print('progress', audio.tell() / size, flush=True)
         result, state = model.feed(mx.zeros((0,)), state, final=True)
-        collect(result)
+        collect(result, final=True)
     temporary = output_path.with_suffix('.tmp')
     temporary.write_text(json.dumps(segments))
     os.replace(temporary, output_path)

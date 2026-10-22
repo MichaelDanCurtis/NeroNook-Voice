@@ -39,7 +39,7 @@ extension MeetingModel {
     func applyLiveSpeakers(final: Bool = false) throws {
         guard let original = transcript, speakerMeetingID == selected?.id else { return }
         transcript = try liveSpeakers.applying(to: original, final: final)
-        if final { transcript?.speakerModelRevision = MeetingSpeakerEngine.revision }
+        if final { transcript?.speakerModelRevision = MeetingSpeakerEngine.analysisRevision }
     }
     func finishLiveSpeakers() async -> Bool {
         await speakerStartTask?.value

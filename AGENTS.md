@@ -1,3 +1,12 @@
+**October 21 · local 0.22.2 candidate:** opening audio queues before recognition
+preparation; 40 ms speaker edge timing reduces missed speaker time by 13.49%
+across three short public AMI windows. 180 Swift / nine worker tests, independent
+NIST, actual isolated live/file workers and signed package/ZIP checks pass.
+Manual corrections retain their labels. Three notes-generation candidates
+regressed and were excluded; the existing summarizer stays unchanged. Not
+installed, notarized or published; host/SDK, accounts and grants unchanged.
+[Evidence and limits](../NeroNook/reports/voice-meeting-reliability-2026-10-21/README.md).
+
 **October 20 · Voice 0.22.1 installed locally:** meeting notes open as readable
 summary/decisions and source-linked action cards. Editing stays behind disclosures;
 old/manual notes retain their editor. Current-commitments generation is included;

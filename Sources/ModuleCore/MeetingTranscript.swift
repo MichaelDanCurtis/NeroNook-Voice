@@ -120,7 +120,7 @@ public struct MeetingTranscript: Codable, Sendable {
             }
         }
         var cursor = 0
-        for index in utterances.indices.sorted(by: { utterances[$0].start < utterances[$1].start }) where utterances[index].track == track && !utterances[index].reviewed {
+        for index in utterances.indices.sorted(by: { utterances[$0].start < utterances[$1].start }) where utterances[index].track == track && !utterances[index].reviewed && utterances[index].correction == nil {
             let line = utterances[index]; var coverage: [Int: Double] = [:]
             while cursor < sorted.count && sorted[cursor].end <= line.start { cursor += 1 }
             var next = cursor

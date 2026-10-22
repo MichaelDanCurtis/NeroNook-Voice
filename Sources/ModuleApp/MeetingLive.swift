@@ -3,12 +3,12 @@ import ModuleCore
 import VoiceAudio
 
 extension MeetingModel {
-    func beginLive(_ meeting: Meeting) async throws {
+    func beginLive(_ meeting: Meeting, feed: MeetingLiveAudioFeed = MeetingLiveAudioFeed()) async throws {
         liveService?.cancel(); liveService = nil; liveState.retire(); livePersistence = nil; livePersistenceMeeting = nil
-        guard liveEnabled else { liveStatus = "Audio-only recording · transcribe afterward"; return }
+        guard liveEnabled else { feed.finish(); liveStatus = "Audio-only recording · transcribe afterward"; return }
         let provider = asrProvider
         guard provider == .apple || selectedASRReady else {
-            liveStatus = "\(provider.title) is not downloaded. Recording audio only; no model fallback."; return
+            feed.finish(); liveStatus = "\(provider.title) is not downloaded. Recording audio only; no model fallback."; return
         }
         let tracks = Set((meeting.microphone ? ["mic"] : []) + (meeting.source != "none" ? ["system"] : []))
         let prior = try store?.liveTranscript(meeting.id, provider: provider)
@@ -26,7 +26,7 @@ extension MeetingModel {
                 }
             }
         }
-        let service = MeetingLiveTranscriber(); liveService = service
+        let service = MeetingLiveTranscriber(feed: feed); liveService = service
         liveStatus = "Preparing \(provider.title) for live words…"
         do {
             let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/NeroASR")
