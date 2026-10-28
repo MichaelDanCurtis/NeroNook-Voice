@@ -9,6 +9,8 @@ let package = Package(name: "NeroDiarization", platforms: [.macOS(.v14)], produc
 ], targets: [
     .executableTarget(name: "NeroDiarization", dependencies: [.product(name: "MLXAudioVAD", package: "mlx-audio-swift"), .product(name: "MLXAudioCore", package: "mlx-audio-swift")]),
     .executableTarget(name: "NeroParakeet", dependencies: [.product(name: "MLXAudioSTT", package: "mlx-audio-swift"), .product(name: "MLXAudioCore", package: "mlx-audio-swift")])
-, .executableTarget(name: "NeroNemotron", dependencies: [.product(name: "MLXAudioSTT", package: "mlx-audio-swift"), .product(name:"MLXAudioTTS",package:"mlx-audio-swift"), .product(name:"MLXAudioCore",package:"mlx-audio-swift")])
+, .executableTarget(name: "NeroNemotron", dependencies: ["MeetingSpeechPolicy", .product(name: "MLXAudioSTT", package: "mlx-audio-swift"), .product(name:"MLXAudioTTS",package:"mlx-audio-swift"), .product(name:"MLXAudioCore",package:"mlx-audio-swift")]),
+ .target(name: "MeetingSpeechPolicy"),
+ .testTarget(name: "MeetingSpeechPolicyTests", dependencies: ["MeetingSpeechPolicy"])
 
 ], swiftLanguageModes: [.v5])

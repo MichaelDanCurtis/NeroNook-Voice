@@ -3,6 +3,7 @@ import AVFoundation
 import MLX
 import MLXAudioSTT
 import MLXAudioCore
+import MeetingSpeechPolicy
 
 private struct Word: Encodable { let text: String; let start: Double; let end: Double }
 private struct Utterance: Encodable {
@@ -40,6 +41,7 @@ private struct Utterance: Encodable {
         var starts: [String: Double] = [:], ends: [String: Double] = [:], quiet: [String: Double] = [:]
         var processedThrough = 0.0
         var lastPartial: [String: String] = [:]
+        var preroll: [String: MeetingSpeechPreroll] = [:]
         func settle(_ track: String) throws {
             guard let start = starts[track], let end = ends[track] else { return }
             let text: String
@@ -71,6 +73,7 @@ private struct Utterance: Encodable {
                 guard command == "commit", header.count == 2, let id = header["id"] as? String,
                       UUID(uuidString: id) != nil else { throw NSError(domain: "NeroMeetingStream", code: 7) }
                 for track in ["mic", "system"] { try settle(track) }
+                preroll = [:]
                 // Final text precedes the acknowledgement; every later partial
                 // starts in a fresh model session on the next audio frame.
                 try emit(["type": "committed", "id": id, "through": processedThrough])
@@ -86,13 +89,21 @@ private struct Utterance: Encodable {
             guard pcm.allSatisfy(\.isFinite) else { throw NSError(domain: "NeroMeetingStream", code: 5) }
             let duration = Double(pcm.count) / 16000, end = start + duration
             processedThrough = max(processedThrough, end)
-            if let previous = ends[track], start - previous > 0.25 { try settle(track) }
+            if let previous = ends[track], start - previous > 0.25 { try settle(track); preroll[track] = nil }
             let energy = pcm.reduce(Float(0)) { $0 + $1 * $1 } / Float(pcm.count)
             let silent = energy < 0.00004
-            if starts[track] == nil && silent { try emit(["type": "ack"]); continue }
+            if starts[track] == nil && silent {
+                preroll[track, default: MeetingSpeechPreroll()].append(pcm, start: start)
+                try emit(["type": "ack"]); continue
+            }
             if starts[track] == nil {
-                starts[track] = start
+                let prefix = preroll[track]?.take(before: start)
+                starts[track] = prefix?.start ?? start
                 if let nemo { sessions[track] = nemo.makeStreamSession(language: "auto", chunkMs: 560) }
+                if let prefix {
+                    if let session = sessions[track] { _ = session.step(prefix.pcm) }
+                    else { samples[track] = prefix.pcm }
+                }
             }
             ends[track] = end; quiet[track] = silent ? (quiet[track] ?? 0) + duration : 0
             if let session = sessions[track] {

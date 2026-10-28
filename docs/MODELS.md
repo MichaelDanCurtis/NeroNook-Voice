@@ -139,8 +139,10 @@ The native runtime has one reviewed local metadata patch (`scripts/patch-mlx-aud
 expose already-computed word timing in segment results. Decoding and weights are
 unchanged. This allows speaker changes to split unreviewed paragraphs at actual
 word boundaries. Missing word timing is never invented, and corrected/reviewed
-utterances are not split. `runtimeRevision` records the upstream commit; the
-installed app version and this patch are part of the complete runtime provenance.
+utterances are not split. `runtimeRevision` records the upstream commit and the
+local streaming-input policy suffix; the installed app version and this patch
+are part of the complete runtime provenance. The `+preroll350ms-v1` policy keeps
+a bounded quiet prefix before speech onset without changing weights or decoding.
 
 The Swift runtime does not yet implement Nemotron 3 diarization. Voice therefore
 bundles an isolated, signed Python/MLX runtime in its resources and expands it

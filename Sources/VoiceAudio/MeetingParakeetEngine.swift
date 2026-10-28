@@ -10,7 +10,7 @@ public struct LocalASREngine {
     public var name: String { provider == .parakeet ? "Parakeet" : "Nemotron" }
     public var helperName: String { "NeroASR" }
     public var revision: String { provider == .parakeet ? "b58cb0ec089186177382a49ffd2109ae1a7664b5" : "7279359e4481b5e9e185a318bd618e429c6d86cd" }
-    public let runtimeRevision = "01dec7c9bdce3088a6b6b7ab9f2e403458195efb"
+    public let runtimeRevision = "01dec7c9bdce3088a6b6b7ab9f2e403458195efb+preroll350ms-v1"
     public var downloadBytes: Int { files.reduce(0) { $0 + $1.size } }
     private var repository: String { provider == .parakeet ? "beshkenadze/parakeet-tdt-0.6b-v3-mlx-encoder-int8" : "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit" }
     private var files: [(name: String, size: Int, sha256: String)] { provider == .parakeet ? [

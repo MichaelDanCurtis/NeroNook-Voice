@@ -8,7 +8,7 @@ public enum MeetingSpeakerEngine {
     @MainActor public static func stopJobs() { for process in jobs.values where process.isRunning { LocalModelProcess.stop(process) }; jobs = [:] }
     public static let revision = "59ed2dbfc1346dcea9d423c71306a3a2499c568f"
     /// Weight identity is separate from the reproducible attribution policy.
-    public static let analysisRevision = revision + "+edges40ms-v1"
+    public static let analysisRevision = revision + "+edges40ms+words-v2"
     private static let files = [
         ("config.json", 1521, "f215091252bc54f8dcc7d682962a659e03a6bcb26d1c86e4728b8c6730130eb4"),
         ("model.safetensors", 198632220, "21e8427d1795c9c46c5800f56b16061734ffd0dcadd71d9bcf0b4d6ef7261da5")

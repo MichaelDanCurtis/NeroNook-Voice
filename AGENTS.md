@@ -1,3 +1,14 @@
+**October 28 · Voice 0.22.4 installed locally:**
+Bounded 350 ms per-source pre-onset audio reaches live MLX ASR once; explicit
+turn boundaries and discontinuities discard it. Word-timed speaker attribution
+excludes ASR gaps while preserving overlap uncertainty/manual corrections.
+213 Swift + five worker checks pass; final release helpers reproduce 23→13
+Parakeet and17→9 Nemotron word errors on12 cached clean/quiet paired read-speech
+clips (182 words). Not a live meeting/WER/DER population claim. Very quiet distant
+speech remains a known gap. Signed package/installed Running/424 exact files and
+other13module continuity verified; no capture/cloud/public/SDK/default changes.
+[Behavior and limits](docs/MEETING-COVERAGE-2026-10-28.md).
+
 **October 27 · local 0.22.3 meeting-action candidate (uninstalled):**
 Original-transcript English commitment reconciliation supplies current
 owner/deadline/status, with reassignment/cancellation source links and explicit
