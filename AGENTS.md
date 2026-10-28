@@ -1,3 +1,15 @@
+**October 28 · Voice 0.22.5 installed locally:**
+Bounded per-source adaptive energy admission retains quieter MLX meeting speech;
+original loud trigger, 350 ms pre-roll and explicit commit/gap resets remain.
+Word-level uncertainty survives regrouping, preventing fabricated confident
+speaker labels. Clean-source 215 Swift + 11 worker checks and six Python speaker
+policy checks pass. Twelve cached read-speech clips/182 words: Parakeet13→2,
+Nemotron9→4 errors, no clip regressions; six synthetic nonspeech controls emit no
+words. Release reproduces debug; installed package/native Running verified.
+Not broad WER/DER/live Teams or battery qualification. SDK working changes and
+other13modules retained; no capture/cloud/public/default-model changes.
+[Behavior and limits](docs/MEETING-QUIET-SPEECH-2026-10-28.md).
+
 **October 28 · Voice 0.22.4 installed locally:**
 Bounded 350 ms per-source pre-onset audio reaches live MLX ASR once; explicit
 turn boundaries and discontinuities discard it. Word-timed speaker attribution

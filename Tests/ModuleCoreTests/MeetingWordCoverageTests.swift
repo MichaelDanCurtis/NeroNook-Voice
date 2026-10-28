@@ -54,6 +54,32 @@ final class MeetingWordCoverageTests: XCTestCase {
         try value.assign([.init(start: 0, end: 0.4, speaker: 0), .init(start: 4.6, end: 5, speaker: 0)], track: "mic")
         XCTAssertNil(value.utterances.first?.speaker)
     }
+    func testUncertainWordsCannotGainIdentityByBeingAveragedTogether() throws {
+        // Word one overlaps both speakers; word two has too little evidence.
+        // Their average would meet the phrase gate, but neither word is certain.
+        var line = MeetingUtterance(start: 0, end: 2, track: "mic", text: "Not certain")
+        line.words = [.init(text: "Not", start: 0, end: 1), .init(text: " certain", start: 1, end: 2)]
+        var value = MeetingTranscript(locale: "en-US"); value.utterances = [line]
+        try value.assign([.init(start: 0, end: 0.9, speaker: 0), .init(start: 0, end: 0.3, speaker: 1),
+                          .init(start: 1, end: 1.4, speaker: 0)], track: "mic")
+        XCTAssertEqual(value.utterances.count, 1)
+        XCTAssertNil(value.utterances.first?.speaker)
+        XCTAssertEqual(value.utterances.first?.id, line.id)
+        XCTAssertEqual(value.utterances.first?.text, line.text)
+    }
+    func testUncertainGroupRemainsUnknownBetweenConfidentTurns() throws {
+        var line = MeetingUtterance(start: 0, end: 4, track: "system", text: "Yes not certain agreed")
+        line.words = [.init(text: "Yes", start: 0, end: 1), .init(text: " not", start: 1, end: 2),
+                      .init(text: " certain", start: 2, end: 3), .init(text: " agreed", start: 3, end: 4)]
+        var value = MeetingTranscript(locale: "en-US"); value.utterances = [line]
+        try value.assign([.init(start: 0, end: 1.9, speaker: 0), .init(start: 1, end: 1.3, speaker: 1),
+                          .init(start: 2, end: 2.4, speaker: 0), .init(start: 3, end: 4, speaker: 1)], track: "system")
+        XCTAssertEqual(value.utterances.map(\.text), ["Yes", "not certain", "agreed"])
+        XCTAssertEqual(value.utterances.map(\.speaker), ["system-0", nil, "system-1"])
+        try value.assign([.init(start: 0, end: 1.9, speaker: 0), .init(start: 1, end: 1.3, speaker: 1),
+                          .init(start: 2, end: 2.4, speaker: 0), .init(start: 3, end: 4, speaker: 1)], track: "system")
+        XCTAssertEqual(value.utterances.map(\.speaker), ["system-0", nil, "system-1"])
+    }
     func testManualCorrectionAndOtherTrackRemainExact() throws {
         var manual = phrase(); manual.correction = "Edited words"; manual.speaker = "mic-6"
         let other = phrase(track: "system")

@@ -42,6 +42,7 @@ private struct Utterance: Encodable {
         var processedThrough = 0.0
         var lastPartial: [String: String] = [:]
         var preroll: [String: MeetingSpeechPreroll] = [:]
+        var gates: [String: MeetingSpeechGate] = [:]
         func settle(_ track: String) throws {
             guard let start = starts[track], let end = ends[track] else { return }
             let text: String
@@ -73,7 +74,7 @@ private struct Utterance: Encodable {
                 guard command == "commit", header.count == 2, let id = header["id"] as? String,
                       UUID(uuidString: id) != nil else { throw NSError(domain: "NeroMeetingStream", code: 7) }
                 for track in ["mic", "system"] { try settle(track) }
-                preroll = [:]
+                preroll = [:]; gates = [:]
                 // Final text precedes the acknowledgement; every later partial
                 // starts in a fresh model session on the next audio frame.
                 try emit(["type": "committed", "id": id, "through": processedThrough])
@@ -90,8 +91,7 @@ private struct Utterance: Encodable {
             let duration = Double(pcm.count) / 16000, end = start + duration
             processedThrough = max(processedThrough, end)
             if let previous = ends[track], start - previous > 0.25 { try settle(track); preroll[track] = nil }
-            let energy = pcm.reduce(Float(0)) { $0 + $1 * $1 } / Float(pcm.count)
-            let silent = energy < 0.00004
+            let silent = gates[track, default: MeetingSpeechGate()].isSilent(pcm, start: start)
             if starts[track] == nil && silent {
                 preroll[track, default: MeetingSpeechPreroll()].append(pcm, start: start)
                 try emit(["type": "ack"]); continue
