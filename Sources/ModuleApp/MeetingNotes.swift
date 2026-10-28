@@ -13,7 +13,7 @@ extension MeetingModel {
     }
     func openNoteSource(_ id: String) {
         guard !occupied, let selected, let store, let notebook,
-              let item = notebook.evidence?.first(where: { $0.id.uuidString == id }) else { return }
+              let item = ((notebook.evidence ?? []) + (notebook.actionResolutions ?? []).flatMap(\.evidence)).first(where: { $0.id.uuidString == id }) else { return }
         do {
             // Reread the durable selected variant immediately before navigation.
             let source = showingLiveTranscript ? try store.liveTranscript(selected.id, provider: asrProvider) : try store.transcript(selected.id, provider: asrProvider)

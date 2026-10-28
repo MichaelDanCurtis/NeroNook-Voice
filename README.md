@@ -256,6 +256,14 @@ Stop saves 16 kHz mono CAF chunks per track in `~/Library/Application Support/Ne
 
 The title-searchable library is paginated. Show audio files exposes the recording and per-provider transcript JSON; Export transcript writes the currently selected provider's timestamped Markdown. Move to Trash uses normal recoverable macOS Trash. Nothing is automatically sent to Agent. Live meeting words and catch-up are now available in 0.11.2; other model providers, long-meeting/echo benchmarks, caption export and evidence-linked Agent questions remain subsequent work.
 
+### Source-grounded action drafts (local 0.22.3 candidate)
+
+Meeting notes now reconcile explicit English commitments against original
+transcript turns, including takeovers, revised deadlines and cancellations.
+Cards show the current owner/date and original/change sources; ambiguous work
+stays under Needs review. No cloud or external task execution is added.
+See [behavior, limits and local checks](docs/MEETING-ACTION-NOTES.md).
+
 ## Architecture and safeguards
 
 - Own signed application identity and microphone privacy prompt; `launchMode: application` uses the SDK's nonce-authenticated local application channel.

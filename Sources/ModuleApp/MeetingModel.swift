@@ -203,8 +203,10 @@ import NookPluginSDK
                 // Attach before the first captured frame. Model preparation
                 // consumes this bounded opening queue once it is ready.
                 let openingFeed = liveEnabled ? MeetingLiveAudioFeed(bufferingLimit: 512) : nil
+                let speakerFeed = speakerOpeningFeed(for: value)
                 let writer = try MeetingAudioWriter(store: store, meeting: value, liveFeed: openingFeed,
-                    speakerFeed: liveSpeakerReady ? liveSpeakerService?.feed : nil); self.writer = writer
+                    speakerFeed: speakerFeed); self.writer = writer
+                beginSpeakerSession(value, openingFeed: speakerFeed)
                 let capture = MeetingCapture(); self.capture = capture
                 started = ProcessInfo.processInfo.systemUptime
                 try capture.start(microphone: microphone?().isEmpty == false ? microphone?() : nil, includeMicrophone: value.microphone,
@@ -234,7 +236,6 @@ import NookPluginSDK
                 guard self.token == generation, self.phase == "recording" else { return }
                 writer.attachLiveFeed(self.liveService?.feed)
                 self.livePreparing = false; self.analysisTask = nil
-                self.beginSpeakerSession(meeting)
             } catch {
                 guard self.token == generation else { return }
                 self.livePreparing = false; self.analysisTask = nil
@@ -242,7 +243,6 @@ import NookPluginSDK
             }
         }
     }
-    func attachSpeakerFeed(_ feed: MeetingLiveAudioFeed) { writer?.attachSpeakerFeed(feed) }
     func tick() {
         guard phase == "recording" || phase == "preparing", let writer else { return }
         let value = writer.snapshot(); duration = value.duration; levels = value.levels
@@ -257,6 +257,9 @@ import NookPluginSDK
         guard active, phase != "finishing" else { return }
         phase = "finishing"; token = UUID(); task?.cancel(); capture?.stop(); capture = nil
         analysisTask?.cancel(); analysisTask = nil
+        // Final Stop must not launch a model that is still preparing. Pause
+        // keeps that same bounded queue and speaker identity for Resume.
+        if !paused && !liveSpeakerReady { speakerStartTask?.cancel(); liveSpeakerService?.cancel() }
         if livePreparing { liveService?.cancel(); liveService = nil; liveState.retire(); livePreparing = false }
         fixtureTask?.cancel(); fixtureTask = nil
         if !issue.isEmpty { liveService?.cancel(); liveState.retire(); cancelLiveSpeakers() }

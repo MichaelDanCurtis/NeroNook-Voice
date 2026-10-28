@@ -49,9 +49,9 @@ extension MeetingModel {
             "organization": .string(json(organizationViewState)), "calendar": .string(json(calendarView)), "ask": .string(json(ask)), "highlight": .string(highlightedUtterance),
             "notebookPage": .string(notebookPage), "thoughts": .string(showNotes ? notebook?.thoughts ?? "" : ""), "summary": .string(showNotes ? notebook?.summary ?? "" : ""),
             "decisions": .string(showNotes ? notebook?.decisions ?? "" : ""), "actionItems": .string(showNotes ? notebook?.actions ?? "" : ""), "notesReviewed": .boolean(notebook?.reviewed ?? false),
-            "actionCards": .string(json(showNotes ? evidenceItems.filter { $0.section == .actions }.prefix(12).map {
-                ["id": $0.id.uuidString, "task": $0.fact, "quote": $0.quote, "start": String($0.start), "track": $0.track]
-            } : [])),
+            "actionCards": .string(json(showNotes ? notebook?.actionCards ?? [] : [])),
+            "taskChanges": .string(showNotes ? notebook?.taskChanges ?? "" : ""),
+            "actionCoverage": .string(showNotes && notebook?.actionResolutions != nil ? "Action draft · explicit English commitments. Check other phrasing in the transcript." : ""),
             "noteEvidence": .string(json(showNotes ? evidenceItems.dropFirst(evidencePage * 6).prefix(6).map { ["id": $0.id.uuidString, "section": $0.section.rawValue, "fact": $0.fact, "quote": $0.quote, "start": String($0.start), "track": $0.track] } : [])),
             "noteEvidencePaging": .string(json(["page": evidencePage, "pages": max(1, (evidenceItems.count + 5) / 6), "count": evidenceItems.count])),
             "liveEnabled": .boolean(liveEnabled), "liveStatus": .string(liveStatus), "liveDraft": .boolean(showingLiveTranscript),

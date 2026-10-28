@@ -1,0 +1,431 @@
+[
+  {
+    "id": "reassigned-owner",
+    "names": {
+      "mic-0": "Lena",
+      "system-0": "Omar"
+    },
+    "turns": [
+      [
+        "mic",
+        "mic-0",
+        "I will prepare the launch checklist by Monday."
+      ],
+      [
+        "system",
+        "system-0",
+        "I will take over the launch checklist from Lena and finish it by Wednesday instead."
+      ],
+      [
+        "mic",
+        "mic-0",
+        "Agreed. Omar owns the launch checklist now. I am no longer responsible for it."
+      ]
+    ],
+    "gold": {
+      "active": [
+        {
+          "taskContains": "launch checklist",
+          "owner": "Omar",
+          "deadlineContains": "Wednesday"
+        }
+      ],
+      "cancelled": []
+    }
+  },
+  {
+    "id": "deadline-per-task",
+    "names": {
+      "mic-0": "Nadia"
+    },
+    "turns": [
+      [
+        "mic",
+        "mic-0",
+        "I will send the invoice by Friday. I will also review the training guide. There is no deadline for reviewing the training guide."
+      ]
+    ],
+    "gold": {
+      "active": [
+        {
+          "taskContains": "invoice",
+          "owner": "Nadia",
+          "deadlineContains": "Friday"
+        },
+        {
+          "taskContains": "training guide",
+          "owner": "Nadia",
+          "deadlineContains": null
+        }
+      ],
+      "cancelled": []
+    }
+  },
+  {
+    "id": "cancel-no-new-task",
+    "names": {
+      "mic-0": "Evan",
+      "system-0": "Mira"
+    },
+    "turns": [
+      [
+        "mic",
+        "mic-0",
+        "I will email the sales report by Thursday."
+      ],
+      [
+        "mic",
+        "mic-0",
+        "Cancel my promise to email the sales report. We will not send that report."
+      ],
+      [
+        "system",
+        "system-0",
+        "I will call the client tomorrow instead."
+      ]
+    ],
+    "gold": {
+      "active": [
+        {
+          "taskContains": "call the client",
+          "owner": "Mira",
+          "deadlineContains": "tomorrow"
+        }
+      ],
+      "cancelled": [
+        "sales report"
+      ]
+    }
+  },
+  {
+    "id": "anonymous-commitment",
+    "names": {
+      "mic-0": "Room speaker 1"
+    },
+    "turns": [
+      [
+        "mic",
+        "mic-0",
+        "I will upload the slides tomorrow."
+      ],
+      [
+        "system",
+        null,
+        "I will review the slides after the upload. Nobody has identified us by name."
+      ]
+    ],
+    "gold": {
+      "active": [
+        {
+          "taskContains": "upload the slides",
+          "owner": null,
+          "deadlineContains": "tomorrow"
+        },
+        {
+          "taskContains": "review the slides",
+          "owner": null,
+          "deadlineContains": "after the upload"
+        }
+      ],
+      "cancelled": []
+    }
+  },
+  {
+    "id": "proposal-not-promise",
+    "names": {
+      "mic-0": "Theo",
+      "system-0": "Ada"
+    },
+    "turns": [
+      [
+        "mic",
+        "mic-0",
+        "Maybe Ada could write the migration plan by June. That is only a suggestion."
+      ],
+      [
+        "system",
+        "system-0",
+        "I have not agreed to write the migration plan. I will collect the cost estimates tomorrow."
+      ]
+    ],
+    "gold": {
+      "active": [
+        {
+          "taskContains": "cost estimates",
+          "owner": "Ada",
+          "deadlineContains": "tomorrow"
+        }
+      ],
+      "cancelled": []
+    }
+  },
+  {
+    "id": "confirmed-other-owner",
+    "names": {
+      "mic-0": "Priya",
+      "system-0": "Ben"
+    },
+    "turns": [
+      [
+        "mic",
+        "mic-0",
+        "Ben will submit the permit on Tuesday. I am reporting his promise, not volunteering."
+      ],
+      [
+        "system",
+        "system-0",
+        "Yes, I will submit the permit on Tuesday."
+      ]
+    ],
+    "gold": {
+      "active": [
+        {
+          "taskContains": "submit the permit",
+          "owner": "Ben",
+          "deadlineContains": "Tuesday"
+        }
+      ],
+      "cancelled": []
+    }
+  },
+  {
+    "id": "deadline-revised-only",
+    "names": {
+      "mic-0": "Alice",
+      "system-0": "Finn"
+    },
+    "turns": [
+      [
+        "mic",
+        "mic-0",
+        "I will send the board pack by Monday."
+      ],
+      [
+        "system",
+        "system-0",
+        "Can you change that deadline to Friday?"
+      ],
+      [
+        "mic",
+        "mic-0",
+        "Yes, Friday replaces Monday for the board pack. I am still responsible for sending it."
+      ]
+    ],
+    "gold": {
+      "active": [
+        {
+          "taskContains": "board pack",
+          "owner": "Alice",
+          "deadlineContains": "Friday"
+        }
+      ],
+      "cancelled": []
+    }
+  },
+  {
+    "id": "cross-chunk-cancellation",
+    "names": {
+      "mic-0": "Rosa",
+      "system-0": "Kai"
+    },
+    "turns": [
+      [
+        "mic",
+        "mic-0",
+        "I will email the contract draft by Friday."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "system",
+        "system-0",
+        "This is historical context about the project architecture and prior design discussions. We are comparing terminology and background; nobody is agreeing to new work in this background discussion."
+      ],
+      [
+        "mic",
+        "mic-0",
+        "Cancel my earlier commitment to email the contract draft. That draft is no longer needed."
+      ],
+      [
+        "system",
+        "system-0",
+        "I will call the legal team on Tuesday instead."
+      ]
+    ],
+    "gold": {
+      "active": [
+        {
+          "taskContains": "call the legal team",
+          "owner": "Kai",
+          "deadlineContains": "Tuesday"
+        }
+      ],
+      "cancelled": [
+        "contract draft"
+      ]
+    }
+  }
+]

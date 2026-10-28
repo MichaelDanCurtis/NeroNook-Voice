@@ -15,6 +15,8 @@ public struct MeetingNotebook: Codable, Equatable, Sendable {
     public var sourceRevision: String?
     public var sourceDigest: String?
     public var evidence: [MeetingNoteEvidence]?
+    /// Optional additive metadata: old/manual notebooks keep their plain list.
+    public var actionResolutions: [MeetingActionResolution]?
     public init(meetingID: UUID) {
         version = 1; self.meetingID = meetingID; thoughts = ""; summary = ""; decisions = ""; actions = ""; reviewed = false
     }
@@ -30,6 +32,17 @@ public struct MeetingNotebook: Codable, Equatable, Sendable {
               items.filter({ $0.section == .actions }).count <= 12,
               items.isEmpty || sourceDigest != nil else { throw VoiceProblem.message("Invalid meeting note evidence") }
         try items.forEach { try $0.validate() }
+        if let resolutions = actionResolutions {
+            guard resolutions.count <= 12, sourceDigest != nil,
+                  Set(resolutions.map(\.id)).count == resolutions.count else { throw VoiceProblem.message("Invalid action items") }
+            try resolutions.forEach { try $0.validate() }
+            let active = resolutions.filter { $0.status == .active }.map { $0.evidence[0] }
+            guard active == items.filter({ $0.section == .actions }),
+                  actions == active.map({ item in
+                      let time = Int(item.start)
+                      return String(format: "[%02d:%02d] ", time / 60, time % 60) + item.fact
+                  }).joined(separator: "\n") else { throw VoiceProblem.message("Edited actions cannot retain generated action metadata") }
+        }
         for (section, text) in [(MeetingNoteEvidence.Section.summary, summary), (.decisions, decisions), (.actions, actions)] {
             let linked = items.filter { $0.section == section }
             guard linked.isEmpty || text == linked.map({ item in
@@ -46,6 +59,7 @@ public struct MeetingNotebook: Codable, Equatable, Sendable {
             self.actions == actions ? nil : .actions
         ].compactMap { $0 })
         evidence = evidence?.filter { !changed.contains($0.section) }
+        if changed.contains(.actions) { actionResolutions = nil }
         self.thoughts = thoughts; self.summary = summary; self.decisions = decisions; self.actions = actions; self.reviewed = reviewed
     }
     public static func digest(_ transcript: MeetingTranscript) -> String {
@@ -57,14 +71,20 @@ public struct MeetingNotebook: Codable, Equatable, Sendable {
     public func isCurrent(for transcript: MeetingTranscript) -> Bool {
         sourceDigest == Self.digest(transcript)
     }
-    public var searchableText: String { [thoughts, summary, decisions, actions].joined(separator: "\n") }
+    public var searchableText: String { [thoughts, summary, decisions, actions, taskChanges].joined(separator: "\n") }
     public func markdown(title: String, includeThoughts: Bool) -> String {
         var text = "# \(title)\n\n"
         if includeThoughts && !thoughts.isEmpty { text += "## My thoughts\n\n\(thoughts)\n\n" }
         if !summary.isEmpty { text += "## Summary\(reviewed ? "" : " · draft")\n\n\(summary)\n\n" }
         if !decisions.isEmpty { text += "## Decisions\n\n\(decisions)\n\n" }
         if !actions.isEmpty { text += "## Action items\n\n\(actions)\n\n" }
+        if !taskChanges.isEmpty { text += "## Task changes and questions\n\n\(taskChanges)\n\n" }
         return text
+    }
+    public var taskChanges: String {
+        (actionResolutions ?? []).filter { $0.status != .active }.map {
+            ($0.status == .cancelled ? "Cancelled · " : "Needs review · ") + $0.task
+        }.joined(separator: "\n")
     }
 }
 
