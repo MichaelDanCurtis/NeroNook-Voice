@@ -78,6 +78,8 @@ function renderActionCards(){
  const tasks=parse(s.actionCards)||[],revision=String(s.selected)+':'+JSON.stringify(tasks);
  const structured=tasks.length>0&&!notebookDirty;
  $('actionCardPanel').hidden=!structured;$('actionCards').replaceChildren();
+ $('taskChangesPanel').hidden=structured||!s.taskChanges||notebookDirty;$('taskChanges').textContent=s.taskChanges||'';
+ $('actionCoverage').hidden=!s.actionCoverage||notebookDirty;$('actionCoverage').textContent=s.actionCoverage||'';
  if(actionCardRevision!==revision){actionCardRevision=revision;$('actionEditor').open=!structured;}
  if(notebookDirty)$('actionEditor').open=true;
  $('actionEditorLabel').textContent=tasks.length?'Edit action list':'Action items';
@@ -85,12 +87,20 @@ function renderActionCards(){
  for(const task of tasks){
   const card=document.createElement('article');card.className='actionCard';
   const title=document.createElement('strong');title.textContent=task.task;
-  const words=document.createElement('details');const label=document.createElement('summary');label.textContent='Original words';
-  const quote=document.createElement('blockquote');quote.textContent=task.quote;words.append(label,quote);
-  const source=document.createElement('button');source.textContent=`Source · ${time(task.start)} · ${task.track==='mic'?'room':'call'}`;
-  source.disabled=!!s.notesStale||!!s.busy||notebookDirty;
-  source.onclick=()=>{if(s.notesStale||s.busy||notebookDirty)return;emit('notebook',{command:'noteSource',citation:task.id});};
-  card.append(title,words,source);$('actionCards').append(card);
+  card.dataset.state=task.status||'active';
+  const meta=document.createElement('small');
+  meta.textContent=(task.status==='cancelled'?'Cancelled':task.status==='uncertain'?'Needs review':task.status==='active'?task.owner||'Unassigned':'Action item')+
+   (task.status==='active'?(task.deadline?' · Due '+task.deadline:' · No deadline stated'):'');
+  const words=document.createElement('details');const label=document.createElement('summary');label.textContent='Original words & changes';words.append(label);
+  const sources=task.sources||[{id:task.id,quote:task.quote,start:task.start,track:task.track}];
+  for(const item of sources){
+   const quote=document.createElement('blockquote');quote.textContent=item.quote;
+   const source=document.createElement('button');source.textContent=`Source · ${time(item.start)} · ${item.track==='mic'?'room':'call'}`;
+   source.disabled=!!s.notesStale||!!s.busy||notebookDirty;
+   source.onclick=()=>{if(s.notesStale||s.busy||notebookDirty)return;emit('notebook',{command:'noteSource',citation:item.id});};
+   words.append(quote,source);
+  }
+  card.append(meta,title,words);$('actionCards').append(card);
  }
 }
 function renderNotesReading(){

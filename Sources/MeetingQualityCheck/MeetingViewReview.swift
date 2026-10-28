@@ -39,9 +39,13 @@ import NookPluginSDK
     @objc private func light() { try? load(.light) }
     @objc private func compact() { window.setContentSize(NSSize(width: 820, height: 550)) }
     private func load(_ scheme: PluginColorScheme) throws {
-        let action1 = ["id":"00000000-0000-4000-8000-000000000001", "task":"Maya will review the results on Friday.", "quote":"I will review the results on Friday.", "start":"24", "track":"mic"]
-        let action2 = ["id":"00000000-0000-4000-8000-000000000002", "task":"Check the invoice tomorrow.", "quote":"I will check the invoice tomorrow.", "start":"32", "track":"system"]
-        let state: [String: Any] = ["selected":"authored-review", "title":"Planning review", "hasTranscript":true, "hasAudio":false, "duration":45, "notebookPage":"notes", "library":"[]", "sources":"[]", "transcript":"[]", "speakers":"{}", "summaryAvailable":true, "summary":"[00:08] No launch date has been agreed.", "decisions":"", "actionItems":"[00:24] Maya will review the results on Friday.\n[00:32] Check the invoice tomorrow.", "actionCards":[action1, action2]]
+        let action1: [String: Any] = ["id":"original-task", "task":"prepare the launch checklist", "owner":"Omar", "deadline":"Wednesday", "status":"active",
+            "sources":[["id":"original-task", "quote":"I will prepare the launch checklist by Monday.", "start":0, "track":"mic"],
+                       ["id":"takeover-source", "quote":"I will take over the launch checklist from Lena and finish it Wednesday instead.", "start":10, "track":"system"]]]
+        let action2: [String: Any] = ["id":"cancelled-task", "task":"email the sales report", "status":"cancelled",
+            "sources":[["id":"cancelled-task", "quote":"I will email the sales report by Thursday.", "start":24, "track":"mic"],
+                       ["id":"cancellation-source", "quote":"Cancel my promise to email the sales report. We will not send that report.", "start":32, "track":"mic"]]]
+        let state: [String: Any] = ["selected":"authored-review", "title":"Planning review", "hasTranscript":true, "hasAudio":false, "duration":45, "notebookPage":"notes", "library":"[]", "sources":"[]", "transcript":"[]", "speakers":"{}", "summaryAvailable":true, "summary":"[00:10] Omar takes over the launch checklist; Wednesday replaces Monday.", "decisions":"", "actionItems":"[00:00] Omar: prepare the launch checklist · Due Wednesday", "actionCards":[action1, action2]]
         let seed = String(decoding: try JSONSerialization.data(withJSONObject: state), as: UTF8.self)
         let theme = try PluginThemeWeb.bootstrap(.init(mode: scheme == .dark ? .dark : .light, scheme: scheme), documentID: "authored-meeting-review")
         let bridge = "window.nero={onState:f=>f(\(seed)),emit:(name,values)=>{window.webkit.messageHandlers.review.postMessage({name,values});return Promise.resolve();}};"

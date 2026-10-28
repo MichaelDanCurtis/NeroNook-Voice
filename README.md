@@ -1,3 +1,12 @@
+**October 21 · local 0.22.2 candidate:** opening audio queues before recognition
+preparation; 40 ms speaker edge timing reduces missed speaker time by 13.49%
+across three short public AMI windows. 180 Swift / nine worker tests, independent
+NIST, actual isolated live/file workers and signed package/ZIP checks pass.
+Manual corrections retain their labels. Three notes-generation candidates
+regressed and were excluded; the existing summarizer stays unchanged. Not
+installed, notarized or published; host/SDK, accounts and grants unchanged.
+[Evidence and limits](../NeroNook/reports/voice-meeting-reliability-2026-10-21/README.md).
+
 **October 20 · Voice 0.22.1 installed locally:** meeting notes open as readable
 summary/decisions and source-linked action cards. Editing stays behind disclosures;
 old/manual notes retain their editor. Current-commitments generation is included;
@@ -246,6 +255,14 @@ Stop saves 16 kHz mono CAF chunks per track in `~/Library/Application Support/Ne
 **Transcribe** uses Apple Speech by default. Select Nemotron 3.5 or Parakeet on the meeting transcription control and explicitly prepare its roughly 756 MB MLX model. Each provider has its own editable transcript, preserving existing corrections. Both MLX options auto-detect supported languages. Cancel retains the recording and previously completed tracks. **Prepare speakers** prepares a bundled local runtime and downloads the pinned 199 MB Nemotron 3 Diarization model. Speaker analysis follows transcription, never concurrently. Up to eight generic speakers per track; estimates and overlap require review. Click timestamps to play, correct text/assignment, and name speakers yourself. Original recognized text and audio stay intact. Apple checkpoints survive cancellation; MLX saves completed tracks.
 
 The title-searchable library is paginated. Show audio files exposes the recording and per-provider transcript JSON; Export transcript writes the currently selected provider's timestamped Markdown. Move to Trash uses normal recoverable macOS Trash. Nothing is automatically sent to Agent. Live meeting words and catch-up are now available in 0.11.2; other model providers, long-meeting/echo benchmarks, caption export and evidence-linked Agent questions remain subsequent work.
+
+### Source-grounded action drafts (local 0.22.3 candidate)
+
+Meeting notes now reconcile explicit English commitments against original
+transcript turns, including takeovers, revised deadlines and cancellations.
+Cards show the current owner/date and original/change sources; ambiguous work
+stays under Needs review. No cloud or external task execution is added.
+See [behavior, limits and local checks](docs/MEETING-ACTION-NOTES.md).
 
 ## Architecture and safeguards
 

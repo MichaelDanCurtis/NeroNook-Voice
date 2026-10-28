@@ -9,6 +9,7 @@ import numpy as np
 from mlx_audio.vad.models.nemotron_diarization.config import ModelConfig
 from mlx_audio.vad.models.nemotron_diarization.nemotron_diarization import Model
 from stream_protocol import emit, packets
+from activity import SpeakerActivity
 
 
 def main():
@@ -23,19 +24,21 @@ def main():
     model.eval()
     mx.eval(model.parameters())
     output = sys.stdout.buffer
-    states, ends, pending = {}, {}, {}
+    states, ends, pending, activities = {}, {}, {}, {}
     count = 0
 
     def feed(track, data, final=False):
         nonlocal count
         if track not in states:
             states[track] = model.init_streaming_state()
+            activities[track] = SpeakerActivity()
         state = states[track]
         result, state = model.feed(mx.array(data), state, final=final)
         states[track] = state
-        through = min(ends.get(track, 0) / 16000, state.frames_processed * 0.01)
-        spans = [dict(start=max(0, float(s.start)), end=min(through, float(s.end)), speaker=int(s.speaker))
-                 for s in result.segments if min(through, float(s.end)) > float(s.start)]
+        spans, through = activities[track].feed(np.array(result.speaker_probs), final=final)
+        through = min(ends.get(track, 0) / 16000, through)
+        spans = [dict(start=s['start'], end=min(through, s['end']), speaker=s['speaker'])
+                 for s in spans if min(through, s['end']) > s['start']]
         count += len(spans)
         if count > 100000:
             raise ValueError('Speaker segment limit')

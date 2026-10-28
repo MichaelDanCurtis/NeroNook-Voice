@@ -79,6 +79,48 @@ final class MeetingLiveAudioTests: XCTestCase {
         XCTAssertEqual(frames, 1600)
         XCTAssertEqual(try saved.chunks.reduce(Int64(0)) { $0 + (try AVAudioFile(forReading: store.audio($1, meeting: saved))).length }, Int64(frames))
     }
+    func testOpeningQueueRetainsEveryFrameWhileRecognizerPrepares() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try MeetingStore(root: root), opening = MeetingLiveAudioFeed(bufferingLimit: 512)
+        let writer = try MeetingAudioWriter(store: store, meeting: .init(title: "Authored startup queue", source: "none", microphone: true), liveFeed: opening)
+        let format = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1024)!
+        buffer.frameLength = 1024
+        for i in 0..<1024 { buffer.floatChannelData![0][i] = Float(i) / 1024 }
+        // No consumer during preparation; more than the usual 128 messages.
+        for n in 0..<400 {
+            writer.append(buffer, track: "mic", start: Double(n)*1024/16000)
+            await writer.synchronize()
+        }
+        let saved = try await writer.finish(state: "saved"); opening.finish()
+        var frames = 0, first: Double?, last: Double = 0
+        for try await event in opening.stream {
+            opening.consumed(event)
+            guard case .audio(let packet) = event else { return XCTFail("Unexpected boundary") }
+            first = first ?? packet.start
+            XCTAssertEqual(packet.start,last,accuracy:0.00001)
+            last = packet.end; frames += packet.pcm.count/4
+        }
+        XCTAssertEqual(first,0); XCTAssertEqual(frames,400*1024)
+        XCTAssertEqual(last,25.6,accuracy:0.00001)
+        XCTAssertEqual(try saved.chunks.reduce(Int64(0)) { $0 + (try AVAudioFile(forReading: store.audio($1,meeting:saved))).length },Int64(frames))
+    }
+    func testOpeningQueueOverflowStillPreservesTheEntireRecording() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try MeetingStore(root: root), opening = MeetingLiveAudioFeed(bufferingLimit: 512)
+        let writer = try MeetingAudioWriter(store:store,meeting:.init(title:"Authored slow preparation",source:"none",microphone:true),liveFeed:opening)
+        let format = AVAudioFormat(standardFormatWithSampleRate:16000,channels:1)!
+        let buffer = AVAudioPCMBuffer(pcmFormat:format,frameCapacity:1024)!;buffer.frameLength=1024
+        memset(buffer.floatChannelData![0],0,4096)
+        for n in 0..<600 { writer.append(buffer,track:"mic",start:Double(n)*1024/16000);await writer.synchronize() }
+        let saved = try await writer.finish(state:"saved");opening.finish()
+        var failed = false
+        do { for try await event in opening.stream { opening.consumed(event) } } catch { failed = true }
+        XCTAssertTrue(failed);XCTAssertTrue(saved.issue.isEmpty)
+        XCTAssertEqual(try saved.chunks.reduce(Int64(0)) { $0 + (try AVAudioFile(forReading:store.audio($1,meeting:saved))).length },600*1024)
+    }
     func testRetiredFeedDoesNotAcceptLateAudio() async throws {
         let feed = MeetingLiveAudioFeed(); feed.finish()
         feed.append(.init(track: "mic", start: 0, pcm: Data(repeating: 0, count: 4096)))

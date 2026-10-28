@@ -5,7 +5,7 @@ import ModuleCore
 /// Optional attribution observes the durable writer. Failure never stops audio.
 /// Apple ASR can share this one MLX speaker model; an MLX ASR uses a later pass.
 @MainActor public final class MeetingLiveSpeakerAnalyzer {
-    public let feed = MeetingLiveAudioFeed()
+    public let feed: MeetingLiveAudioFeed
     private var process: Process?
     private var input: Pipe?
     private var output: Pipe?
@@ -22,16 +22,34 @@ import ModuleCore
     private var lastWriteStarted: Date?
     private var update: ((String, [MeetingSpeakerSpan], Double) throws -> Void)?
     private var failure: ((String) -> Void)?
-    public init() {}
+    public init(feed: MeetingLiveAudioFeed = MeetingLiveAudioFeed()) { self.feed = feed }
+    /// Selection used before capture starts. Resume never replaces a preparing
+    /// or failed session with a second consumer; failed sessions use saved audio.
+    public static func recordingFeed(existing: MeetingLiveSpeakerAnalyzer?, continuingMeeting: Bool,
+        separation: Bool, modelReady: Bool, live: Bool, provider: MeetingASRProvider) -> MeetingLiveAudioFeed? {
+        if continuingMeeting { return existing?.feed }
+        guard separation, modelReady, live, provider == .apple else { return nil }
+        return MeetingLiveAudioFeed(bufferingLimit: 512)
+    }
     public func start(update: @escaping (String, [MeetingSpeakerSpan], Double) throws -> Void, failure: @escaping (String) -> Void) async throws {
         guard MeetingSpeakerEngine.ready else { throw VoiceProblem.message("Prepare speakers before live attribution.") }
-        self.update = update; self.failure = failure
         try await MeetingSpeakerEngine.verify(MeetingSpeakerEngine.directory)
+        try await startPreparedWorker(executable: SpeakerRuntime.executable,
+            arguments: ["-I", "-B", Bundle.main.resourceURL!.appendingPathComponent("NemotronSpeakers/stream.py").path, MeetingSpeakerEngine.directory.path],
+            update: update, failure: failure)
+    }
+    /// Shared production transport entry; local fixtures supply an authored
+    /// worker without model loading, capture or network access.
+    func startPreparedWorker(executable: URL, arguments: [String],
+        waitForAvailable: () async throws -> Void = { try await LocalModelProcess.waitForAvailable() },
+        update: @escaping (String, [MeetingSpeakerSpan], Double) throws -> Void,
+        failure: @escaping (String) -> Void) async throws {
         try Task.checkCancellation(); guard active else { throw CancellationError() }
+        self.update = update; self.failure = failure
         let token = epoch, child = Process(), input = Pipe(), output = Pipe()
         self.process = child; self.input = input; self.output = output
-        child.executableURL = SpeakerRuntime.executable
-        child.arguments = ["-I", "-B", Bundle.main.resourceURL!.appendingPathComponent("NemotronSpeakers/stream.py").path, MeetingSpeakerEngine.directory.path]
+        child.executableURL = executable
+        child.arguments = arguments
         child.environment = ["PATH": "/usr/bin:/bin", "HOME": FileManager.default.homeDirectoryForCurrentUser.path, "PYTHONDONTWRITEBYTECODE": "1"]
         child.standardInput = input; child.standardOutput = output; child.standardError = FileHandle.nullDevice
         _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
@@ -43,7 +61,11 @@ import ModuleCore
                 do { try self.receive(data) } catch { self.fail(error.localizedDescription) }
             }
         }
-        try await LocalModelProcess.waitForAvailable()
+        try await waitForAvailable()
+        // Stop can retire the service while another model exits. Recheck after
+        // that suspension, before any child is launched or audio is consumed.
+        try Task.checkCancellation()
+        guard active, epoch == token else { throw CancellationError() }
         try LocalModelProcess.launch(child)
         for _ in 0..<150 {
             try Task.checkCancellation(); guard active, child.isRunning else { throw VoiceProblem.message(issue ?? "Live speaker model could not start") }

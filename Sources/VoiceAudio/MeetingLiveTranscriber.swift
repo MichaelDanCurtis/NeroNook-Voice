@@ -7,7 +7,7 @@ import ModuleCore
 /// No capture API: consumes the durable recorder's bounded normalized feed.
 /// Apple streams independently per track; MLX uses one resident worker/model.
 @MainActor public final class MeetingLiveTranscriber {
-    public let feed = MeetingLiveAudioFeed()
+    public let feed: MeetingLiveAudioFeed
     private var analyzers: [String: SpeechAnalyzer] = [:]
     private var bridges: [String: AudioBridge] = [:]
     private var results: [Task<Void, Error>] = []
@@ -36,7 +36,7 @@ import ModuleCore
     private var boundaries: [UUID: Boundary] = [:]
     private var update: ((MeetingLiveUpdate) throws -> Void)?
     private var failure: ((String) -> Void)?
-    public init() {}
+    public init(feed: MeetingLiveAudioFeed = MeetingLiveAudioFeed()) { self.feed = feed }
     public func start(provider: MeetingASRProvider, tracks: Set<String>, locale: String, helper: URL,
                       update: @escaping @MainActor (MeetingLiveUpdate) throws -> Void,
                       failure: @escaping @MainActor (String) -> Void) async throws {

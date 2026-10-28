@@ -25,8 +25,11 @@ public final class MeetingLiveAudioFeed: @unchecked Sendable {
     private let lock = NSLock()
     private var active = true
     private var queued = 0
-    public init() {
-        let pair = AsyncThrowingStream<MeetingLiveInput, Error>.makeStream(bufferingPolicy: .bufferingOldest(128))
+    /// Preparing recognizers may retain a larger bounded opening queue. The
+    /// byte ceiling is unchanged, and overflow still cannot stop durable audio.
+    public init(bufferingLimit: Int = 128) {
+        let limit = min(512, max(1, bufferingLimit))
+        let pair = AsyncThrowingStream<MeetingLiveInput, Error>.makeStream(bufferingPolicy: .bufferingOldest(limit))
         stream = pair.stream; continuation = pair.continuation
     }
     public func append(_ buffer: AVAudioPCMBuffer, track: String, start: Double) {

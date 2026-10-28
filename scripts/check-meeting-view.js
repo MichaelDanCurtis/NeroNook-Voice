@@ -44,11 +44,11 @@ const task={id:'task-source',task:'Dana will send the draft on Friday.',quote:'I
 const taskState={...noteState,selected:'task-meeting',actionCards:JSON.stringify([task]),actionItems:'[00:08] Dana will send the draft on Friday.'};
 callback(taskState);let taskCard=elements.get('actionCards').children[0];
 assert.equal(elements.get('actionCardPanel').hidden,false);assert.equal(elements.get('actionEditor').open,false);
-assert.equal(taskCard.children[0].textContent,task.task);assert.equal(taskCard.children[1].children[1].textContent,task.quote);
-taskCard.children[2].onclick();assert.equal(emitted.pop().values.citation,'task-source');
-callback({...taskState,notesStale:true});taskCard=elements.get('actionCards').children[0];assert.equal(taskCard.children[2].disabled,true);
-let taskEvents=emitted.length;taskCard.children[2].onclick();assert.equal(emitted.length,taskEvents);
-callback({...taskState,busy:true});elements.get('actionCards').children[0].children[2].onclick();assert.equal(emitted.length,taskEvents);
+assert.equal(taskCard.children[1].textContent,task.task);assert.equal(taskCard.children[2].children[1].textContent,task.quote);
+taskCard.children[2].children[2].onclick();assert.equal(emitted.pop().values.citation,'task-source');
+callback({...taskState,notesStale:true});taskCard=elements.get('actionCards').children[0];assert.equal(taskCard.children[2].children[2].disabled,true);
+let taskEvents=emitted.length;taskCard.children[2].children[2].onclick();assert.equal(emitted.length,taskEvents);
+callback({...taskState,busy:true});elements.get('actionCards').children[0].children[2].children[2].onclick();assert.equal(emitted.length,taskEvents);
 callback(taskState);elements.get('actions').value='Manual revision';elements.get('actions').oninput();
 assert.equal(elements.get('actionCardPanel').hidden,true);assert.equal(elements.get('actionEditor').open,true);
 elements.get('saveNotes').onclick();callback({...taskState,selected:'legacy-notes',actionCards:'[]'});
@@ -125,3 +125,24 @@ assert.equal(elements.get('pause').hidden,false);assert.equal(elements.get('resu
 callback({...state,active:true,phase:'paused'});assert.equal(elements.get('pause').hidden,true);assert.equal(elements.get('resume').hidden,false);assert.equal(elements.get('stop').hidden,false);
 callback({...state,active:true,phase:'finishing'});assert.equal(elements.get('stop').disabled,true);
 console.log('PASS: recording, paused and finishing transports retain visible Stop and the correct pause/resume controls');
+
+// Source-grounded current tasks retain each independent original/change source.
+const chain={id:'original',task:'prepare the launch checklist',owner:'Omar',deadline:'Wednesday',status:'active',
+ sources:[{id:'original',quote:'I will prepare the launch checklist by Monday.',start:0,track:'mic'},
+ {id:'takeover',quote:'I will take over and finish Wednesday.',start:10,track:'system'}]};
+callback({...taskState,selected:'resolved-tasks',actionCards:JSON.stringify([chain])});
+let resolvedCard=elements.get('actionCards').children[0];
+assert.equal(resolvedCard.children[0].textContent,'Omar · Due Wednesday');
+assert.equal(resolvedCard.children[2].children[3].textContent,chain.sources[1].quote);
+resolvedCard.children[2].children[4].onclick();assert.equal(emitted.pop().values.citation,'takeover');
+callback({...taskState,selected:'cancelled-task',actionCards:JSON.stringify([{...chain,status:'cancelled'}])});
+assert.equal(elements.get('actionCards').children[0].children[0].textContent,'Cancelled');
+callback({...taskState,selected:'fallback-task-changes',actionCards:'[]',taskChanges:'Cancelled · launch checklist'});
+assert.equal(elements.get('taskChangesPanel').hidden,false);
+assert.equal(elements.get('taskChanges').textContent,'Cancelled · launch checklist');
+console.log('PASS: current owner/deadline, original + change navigation, cancelled state and bounded-card fallback');
+
+callback({...taskState,selected:'no-explicit-tasks',actionCards:'[]',actionCoverage:'Action draft · explicit English commitments. Check other phrasing in the transcript.'});
+assert.equal(elements.get('actionCoverage').hidden,false);
+assert.ok(elements.get('actionCoverage').textContent.includes('Check other phrasing'));
+console.log('PASS: limited-language coverage remains visible even with no automatic tasks');

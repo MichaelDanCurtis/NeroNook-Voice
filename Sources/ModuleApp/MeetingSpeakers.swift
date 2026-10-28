@@ -3,7 +3,14 @@ import ModuleCore
 import VoiceAudio
 
 extension MeetingModel {
-    func beginSpeakerSession(_ meeting: Meeting) {
+    /// A resumed meeting keeps its original feed even while the model is still
+    /// preparing. A new eligible meeting buffers before the first durable frame.
+    func speakerOpeningFeed(for meeting: Meeting) -> MeetingLiveAudioFeed? {
+        MeetingLiveSpeakerAnalyzer.recordingFeed(existing: liveSpeakerService,
+            continuingMeeting: speakerMeetingID == meeting.id, separation: speakerSeparation,
+            modelReady: speakersReady, live: liveEnabled, provider: asrProvider)
+    }
+    func beginSpeakerSession(_ meeting: Meeting, openingFeed: MeetingLiveAudioFeed?) {
         if speakerMeetingID == meeting.id { return } // pause/resume shares identity state
         cancelLiveSpeakers(); speakerMeetingID = meeting.id; liveSpeakers.reset()
         guard speakerSeparation else { speakerStatus = "Speaker separation off"; return }
@@ -11,7 +18,10 @@ extension MeetingModel {
         guard liveEnabled, asrProvider == .apple else {
             speakerStatus = "Speaker labels after Stop · one MLX model at a time"; return
         }
-        let service = MeetingLiveSpeakerAnalyzer(); liveSpeakerService = service
+        guard let openingFeed else {
+            speakerStatus = "Live speaker opening audio unavailable · identify speakers from saved audio after Stop"; return
+        }
+        let service = MeetingLiveSpeakerAnalyzer(feed: openingFeed); liveSpeakerService = service
         let epoch = liveSpeakers.epoch
         speakerStatus = "Preparing local speaker labels · audio recording remains independent"
         speakerStartTask = Task { [weak self] in
@@ -26,8 +36,10 @@ extension MeetingModel {
                     guard let self, self.liveSpeakers.epoch == epoch else { return }
                     self.speakerStatus = message + " Identify speakers from saved audio afterward."
                 })
-                guard self.liveSpeakers.epoch == epoch else { service.cancel(); return }
-                self.liveSpeakerReady = true; self.attachSpeakerFeed(service.feed)
+                try Task.checkCancellation()
+                guard self.speakerMeetingID == meeting.id, self.liveSpeakers.epoch == epoch,
+                      self.liveSpeakerService === service else { service.cancel(); return }
+                self.liveSpeakerReady = true
                 self.speakerStatus = "Listening for individual speakers in room and call audio"
             } catch {
                 service.cancel()
@@ -39,7 +51,7 @@ extension MeetingModel {
     func applyLiveSpeakers(final: Bool = false) throws {
         guard let original = transcript, speakerMeetingID == selected?.id else { return }
         transcript = try liveSpeakers.applying(to: original, final: final)
-        if final { transcript?.speakerModelRevision = MeetingSpeakerEngine.revision }
+        if final { transcript?.speakerModelRevision = MeetingSpeakerEngine.analysisRevision }
     }
     func finishLiveSpeakers() async -> Bool {
         await speakerStartTask?.value

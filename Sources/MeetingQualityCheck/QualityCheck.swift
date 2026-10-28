@@ -7,7 +7,7 @@ import VoiceAudio
 /// preparation, recording, preference access, meeting-store writes or providers.
 @main struct MeetingQualityCheck {
     struct Fixture: Decodable { let id: String; let names: [String: String]; let turns: [[String?]] }
-    struct Receipt: Codable { let fixture: String; let inputSHA256: String; let seconds: Double; let notebook: MeetingNotebook?; let resolvedSources: Int; let error: String? }
+    struct Receipt: Codable { let fixture: String; let inputSHA256: String; let seconds: Double; let notebook: MeetingNotebook?; let resolvedSources: Int; let error: String?; var proposals: [MeetingActionProposal]? }
     static func main() async throws {
         if Bundle.main.bundleIdentifier == "cafe.nero.review.meeting-tasks", let url = Bundle.main.resourceURL?.appendingPathComponent("MeetingReview.json") {
             let paths = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: url))
@@ -39,15 +39,19 @@ import VoiceAudio
             }
             try transcript.validate()
             let began = ProcessInfo.processInfo.systemUptime
-            let receipt: Receipt
+            var receipt: Receipt
             do {
                 let notes = try await MeetingSummarizer.draft(transcript, meetingID: UUID(uuidString: String(format: "00000000-0000-4000-9000-%012d", index))!) { _ in }
                 var resolved = 0
-                for item in notes.evidence ?? [] { _ = try item.resolve(in: transcript, digest: notes.sourceDigest); resolved += 1 }
+                var seen = Set<UUID>()
+                for item in (notes.evidence ?? []) + (notes.actionResolutions ?? []).flatMap(\.evidence) where seen.insert(item.id).inserted {
+                    _ = try item.resolve(in: transcript, digest: notes.sourceDigest); resolved += 1
+                }
                 receipt = Receipt(fixture: fixture.id, inputSHA256: digest, seconds: ProcessInfo.processInfo.systemUptime - began, notebook: notes, resolvedSources: resolved, error: nil)
             } catch {
                 receipt = Receipt(fixture: fixture.id, inputSHA256: digest, seconds: ProcessInfo.processInfo.systemUptime - began, notebook: nil, resolvedSources: 0, error: error.localizedDescription)
             }
+            receipt.proposals = try? MeetingActionReconciler.proposals(transcript)
             try encoder.encode(receipt).write(to: file, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
             print("\(fixture.id): \(receipt.error == nil ? "generated" : "failed") · \(String(format: "%.2f", receipt.seconds)) s · \(receipt.resolvedSources) verified source links")

@@ -101,3 +101,20 @@ calls, sleep/recovery and broader hardware remain release gates. This slice adds
 no automatic call-end stopping, participant-name matching or native Teams bot.
 
 [Local delivery receipts](../../NeroNook/reports/teams-speakers-2026-10-15/README.md).
+
+
+## Local 0.22.2 candidate · October 21
+
+The recording feeds a bounded opening queue before the selected live recognizer
+prepares, so startup words can be consumed once it is ready. Overflow is reported
+and does not stop or discard recorded audio. File/live attribution now uses the
+same 40 ms edge postprocessor over the unchanged 0.50 activity threshold, with
+four 10 ms frames of bounded lookahead; independently clocked sources and overlap
+remain separate. Analysis revisions include the policy, and manual text
+corrections protect the associated label even in older unreviewed records.
+
+This is a signed local candidate, not an installed update. Actual Teams calls,
+ASR WER, acoustic echo, broad speaker identity and notes-generation accuracy are
+not established by the short-window coverage improvement. The existing local
+summary generator is retained after three alternative designs failed semantic
+checks. [Measurements and limits](../../NeroNook/reports/voice-meeting-reliability-2026-10-21/README.md).

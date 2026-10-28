@@ -71,7 +71,7 @@ extension MeetingModel {
                     else { try store.saveTranscript(result, id: selected.id, provider: provider) }
                 }
                 // Re-run unreviewed labels from older speaker models on every track.
-                if action == "speakers" || result.speakerModelRevision != MeetingSpeakerEngine.revision { result.labelledTracks = [] }
+                if action == "speakers" || result.speakerModelRevision != MeetingSpeakerEngine.analysisRevision { result.labelledTracks = [] }
                 let tracks = Set(selected.chunks.map(\.track)).sorted()
                 for (index, track) in tracks.enumerated() {
                     try Task.checkCancellation(); let label = track == "mic" ? "microphone" : "call audio"
@@ -98,13 +98,13 @@ extension MeetingModel {
                         }
                         result.completedTracks.append(track); try saveResult(); transcript = result
                     }
-                    if MeetingSpeakerEngine.ready, (action == "speakers" || speakerSeparation), (result.completedTracks.contains(track) || result.utterances.contains(where: { $0.track == track })), (!result.labelledTracks.contains(track) || result.speakerModelRevision != MeetingSpeakerEngine.revision) {
+                    if MeetingSpeakerEngine.ready, (action == "speakers" || speakerSeparation), (result.completedTracks.contains(track) || result.utterances.contains(where: { $0.track == track })), (!result.labelledTracks.contains(track) || result.speakerModelRevision != MeetingSpeakerEngine.analysisRevision) {
                         status = "Separating speakers in \(label)…"
                         let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/NeroDiarization")
                         let spans = try await MeetingSpeakerEngine.identify(audio, helper: helper, working: temporary) { fraction in
                             self.processProgress = (Double(index) + fraction) / Double(tracks.count)
                         }
-                        try result.assign(spans, track: track); result.speakerModelRevision = MeetingSpeakerEngine.revision; try saveResult(); transcript = result
+                        try result.assign(spans, track: track); result.speakerModelRevision = MeetingSpeakerEngine.analysisRevision; try saveResult(); transcript = result
                     }
                     try? FileManager.default.removeItem(at: audio)
                 }
