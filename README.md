@@ -1,3 +1,21 @@
+**October30 · Voice0.22.6 installed locally:**
+Reviewed clean release preserves recording gaps/converter tails and live ASR
+clock alignment.424installed files match;13othermodules/40grant bytes exact,
+SDK resources/entitlements retained. Native settings/Fn/model choices and four
+older meetings remain. Owner reports words/Pause/Resume/save work, but the new
+recording is not yet located in readback; clarification pending. No programmatic
+capture or shared-speech approval claim. [Delivery and limits](reports/meeting-end-to-end-2026-10-29/README.md).
+
+**October29 · local meeting-timing source candidate (not installed):**
+Separate input/output clocks preserve captured gaps, resampler tails and source
+alignment through rotation/Resume. Backward clocks and format changes explicitly
+refuse after preserving accepted tails; live ASR pads bounded short gaps.
+Clean225Swift/15worker-policy checks pass; actual release workers retain all36
+contiguous-case texts. Actual cached-human file/live speaker baseline is30.70%/
+32.08%pooled DER, showing remaining missed activity. No new WER/live-recording or
+installed quality claim; Voice0.22.5 remains installed. No SDK/cloud/capture/public
+change. [Evidence and limits](reports/meeting-end-to-end-2026-10-29/README.md).
+
 **October 21 · local 0.22.2 candidate:** opening audio queues before recognition
 preparation; 40 ms speaker edge timing reduces missed speaker time by 13.49%
 across three short public AMI windows. 180 Swift / nine worker tests, independent

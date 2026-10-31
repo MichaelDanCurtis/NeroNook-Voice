@@ -1,3 +1,10 @@
+**October 30 · Voice 0.22.6 live trial is pending.** The owner clarified:
+“I haven’t run the recording test yet.” Earlier positive reports were superseded.
+Installation and automated timing/worker checks pass separately; live words,
+Pause/Resume, saving and saved-recording timing are not accepted. The existing
+four older recordings establish neither a new save nor a broken save. Start
+recording only from the owner's direct control.
+
 **October 20 · Voice 0.22.1 installed locally:** meeting notes open as readable
 summary/decisions and source-linked action cards. Editing stays behind disclosures;
 old/manual notes retain their editor. Current-commitments generation is included;

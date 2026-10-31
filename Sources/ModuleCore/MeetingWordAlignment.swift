@@ -7,6 +7,8 @@ public enum MeetingWordAlignment {
         guard !words.isEmpty, words.count <= 8192, text.utf8.count <= 16000 else { return nil }
         var cursor = text.startIndex, result: [MeetingWord] = []
         for var word in words {
+            guard word.start.isFinite, word.end.isFinite, word.start >= 0, word.end > word.start,
+                  result.last.map({ word.start >= $0.end }) ?? true else { return nil }
             let value = word.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !value.isEmpty else { return nil }
             let from = cursor

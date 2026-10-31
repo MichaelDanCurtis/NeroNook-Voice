@@ -88,6 +88,10 @@ public struct MeetingTranscript: Codable, Sendable {
         let sorted = Self.unionSpeakerSpans(spans)
         // Split unreviewed, word-aligned phrases when the dominant speaker changes.
         // Never guess word timing from text length or overwrite a manual correction.
+        // Keep the word-level abstention through regrouping. Averaging an
+        // overlap-ambiguous word with an under-covered word must not create a
+        // confident phrase that neither word supports.
+        var uncertainGroups = Set<UUID>()
         var splitCursor = 0
         utterances = utterances.sorted { $0.start < $1.start }.flatMap { line -> [MeetingUtterance] in
             guard line.track == track, !line.reviewed, line.correction == nil, let rawWords = line.words,
@@ -112,22 +116,47 @@ public struct MeetingTranscript: Codable, Sendable {
                     groups[groups.count - 1].append(word)
                 } else { groups.append([word]); labels.append(label) }
             }
-            guard groups.count > 1 else { return [line] }
-            return groups.map { group in
+            guard groups.count > 1 else {
+                if labels.first! == nil { uncertainGroups.insert(line.id) }
+                return [line]
+            }
+            return groups.enumerated().map { index, group in
                 var turn = MeetingUtterance(start: group.first!.start, end: group.last!.end, track: track,
                                             text: group.map(\.text).joined().trimmingCharacters(in: .whitespacesAndNewlines))
-                turn.words = group; return turn
+                turn.words = group
+                if labels[index] == nil { uncertainGroups.insert(turn.id) }
+                return turn
             }
         }
         var cursor = 0
         for index in utterances.indices.sorted(by: { utterances[$0].start < utterances[$1].start }) where utterances[index].track == track && !utterances[index].reviewed && utterances[index].correction == nil {
-            let line = utterances[index]; var coverage: [Int: Double] = [:]
+            let line = utterances[index]
+            if uncertainGroups.contains(line.id) { utterances[index].speaker = nil; continue }
+            var coverage: [Int: Double] = [:]
+            // Genuine non-overlapping word intervals are speech evidence. An
+            // ASR phrase can span a long pause or another person's turn: that
+            // untranscribed gap must neither erase nor steal these words' label.
+            // Missing/invalid alignment keeps the conservative phrase fallback.
+            let words = line.words.flatMap { MeetingWordAlignment.preserving(line.text, words: $0) }
+            let intervals = words?.map { ($0.start, $0.end) } ?? [(line.start, line.end)]
             while cursor < sorted.count && sorted[cursor].end <= line.start { cursor += 1 }
             var next = cursor
             while next < sorted.count && sorted[next].start < line.end {
-                let span = sorted[next]; coverage[span.speaker, default: 0] += max(0, min(line.end, span.end) - max(line.start, span.start)); next += 1
+                let span = sorted[next]
+                var lower = 0, upper = intervals.count
+                while lower < upper {
+                    let middle = (lower + upper) / 2
+                    if intervals[middle].1 <= span.start { lower = middle + 1 } else { upper = middle }
+                }
+                while lower < intervals.count && intervals[lower].0 < span.end {
+                    let (start, end) = intervals[lower]
+                    coverage[span.speaker, default: 0] += max(0, min(end, span.end) - max(start, span.start))
+                    lower += 1
+                }
+                next += 1
             }
-            let order = coverage.sorted { $0.value > $1.value }; let duration = max(0.01, line.end - line.start)
+            let order = coverage.sorted { $0.value > $1.value }
+            let duration = max(0.01, intervals.reduce(0) { $0 + $1.1 - $1.0 })
             if let best = order.first, best.value / duration >= 0.55, (order.dropFirst().first?.value ?? 0) / duration < 0.2 {
                 let id = "\(track)-\(best.key)"; utterances[index].speaker = id
                 if names[id] == nil { names[id] = "\(track == "mic" ? "Room" : "Call") speaker \(best.key + 1)" }
