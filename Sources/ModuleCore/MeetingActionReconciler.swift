@@ -28,6 +28,8 @@ public enum MeetingActionReconciler {
         let commitment = try NSRegularExpression(pattern: "(?i)\\b(" + owners + ")(?:\\s+(?:will|shall)|['’]ll)\\s+")
         var tasks: [TaskState] = []
         for (index, line) in lines.enumerated() {
+            // A retained alternate is not evidence of a second spoken commitment.
+            if transcript.isKeptRecognitionAlternative(line.id){continue}
             let text = MeetingActionResolution.words(line)
             // A fresh explicit cancellation is not a new task called 'cancel'.
             var recognized = false

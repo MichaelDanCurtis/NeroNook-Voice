@@ -2,6 +2,57 @@ import Foundation
 import CryptoKit
 import ModuleCore
 
+// An original operation owns this receipt. Operation errors remain separate
+// from failures closing the original local file/session resources.
+public final class MeetingCleanupReceipt: @unchecked Sendable {
+    private let lock = NSLock()
+    private var first: String?
+    public init() {}
+    public func record(_ message: String) { lock.lock(); defer { lock.unlock() }; if first == nil { first = message } }
+    public var issue: String? { lock.lock(); defer { lock.unlock() }; return first }
+    public func close(_ handle: FileHandle, context: String) {
+        close(handle, context: context) { try $0.close() }
+    }
+    func close(_ handle: FileHandle, context: String, operation: (FileHandle) throws -> Void) {
+        do { try operation(handle) } catch { record(context + ": \(error)") }
+    }
+}
+public enum MeetingCleanupContext {
+    @TaskLocal public static var current: MeetingCleanupReceipt?
+}
+private final class MeetingSessionDelegate: NSObject, URLSessionDelegate, @unchecked Sendable {
+    let receipt: MeetingCleanupReceipt?
+    private let lock = NSLock()
+    private var returned = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    init(_ receipt: MeetingCleanupReceipt?) { self.receipt = receipt }
+    func waitForReturn() async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if returned { lock.unlock(); continuation.resume(); return }
+            waiters.append(continuation); lock.unlock()
+        }
+    }
+    func urlSession(_ session: URLSession, didBecomeInvalidWithError error: Error?) {
+        if let error { receipt?.record("session invalidation failed: \(error)") }
+        lock.lock(); returned = true; let pending = waiters; waiters.removeAll(); lock.unlock()
+        pending.forEach { $0.resume() }
+    }
+}
+// Owns one ephemeral session; wait only for its own actual invalidation callback.
+final class MeetingOwnedSession {
+    private let delegate: MeetingSessionDelegate
+    let session: URLSession
+    init(configuration: URLSessionConfiguration, receipt: MeetingCleanupReceipt?) {
+        let delegate = MeetingSessionDelegate(receipt); self.delegate = delegate
+        session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+    }
+    func invalidateAndWait() async {
+        session.invalidateAndCancel()
+        await delegate.waitForReturn()
+    }
+}
+
 public enum SpeakerRuntime {
     private struct Receipt: Decodable { var sha256: String }
     private static var resource: URL { Bundle.main.resourceURL!.appendingPathComponent("speaker-runtime.tar.gz") }
@@ -14,6 +65,22 @@ public enum SpeakerRuntime {
     }
     public static var executable: URL { directory.appendingPathComponent("bin/python3.12") }
     public static var ready: Bool { digest != nil && FileManager.default.fileExists(atPath: directory.appendingPathComponent(".prepared").path) && FileManager.default.isExecutableFile(atPath: executable.path) }
+    // Called only after successful launch. Retain the waiter even if the
+    // child exits before the first isRunning observation.
+    static func waitForOriginalChild(_ process: Process) async throws {
+        let waiter = Task.detached { process.waitUntilExit() }
+        do {
+            while process.isRunning {
+                try Task.checkCancellation()
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            await waiter.value
+        } catch {
+            if process.isRunning { process.terminate() }
+            await waiter.value
+            throw error
+        }
+    }
     public static func prepare() async throws {
         if ready { return }
         guard let expected = digest else { throw VoiceProblem.message("The bundled speaker runtime is missing. Reinstall Nero Voice.") }
@@ -31,11 +98,7 @@ public enum SpeakerRuntime {
             process.arguments = ["-xzf", archive.path, "-C", staging.path]
             process.standardInput = FileHandle.nullDevice; process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
             try process.run()
-            defer { if process.isRunning { process.terminate(); process.waitUntilExit() } }
-            while process.isRunning {
-                if Task.isCancelled { process.terminate(); process.waitUntilExit(); throw CancellationError() }
-                try await Task.sleep(for: .milliseconds(100))
-            }
+            try await waitForOriginalChild(process)
             guard process.terminationStatus == 0 else { throw VoiceProblem.message("Could not prepare the bundled speaker runtime.") }
             try Task.checkCancellation()
             try Data(expected.utf8).write(to: staging.appendingPathComponent(".prepared"))

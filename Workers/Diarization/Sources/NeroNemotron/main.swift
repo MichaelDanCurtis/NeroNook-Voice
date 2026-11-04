@@ -90,7 +90,18 @@ private struct Utterance: Encodable {
             guard pcm.allSatisfy(\.isFinite) else { throw NSError(domain: "NeroMeetingStream", code: 5) }
             let duration = Double(pcm.count) / 16000, end = start + duration
             processedThrough = max(processedThrough, end)
-            if let previous = ends[track], start - previous > 0.25 { try settle(track); preroll[track] = nil }
+            switch MeetingSpeechGap.action(previousEnd: ends[track], nextStart: start) {
+            case .none: break
+            case .pad(let frames):
+                // A small capture gap must advance the model clock as it does
+                // the indexed recording and speaker stream; keep word context.
+                let silence = [Float](repeating: 0, count: frames)
+                if let session = sessions[track] { _ = session.step(silence) }
+                else { samples[track, default: []].append(contentsOf: silence) }
+                quiet[track] = (quiet[track] ?? 0) + Double(frames) / 16000
+            case .settle: try settle(track); preroll[track] = nil
+            case .reject: throw NSError(domain: "NeroMeetingStream", code: 8)
+            }
             let silent = gates[track, default: MeetingSpeechGate()].isSilent(pcm, start: start)
             if starts[track] == nil && silent {
                 preroll[track, default: MeetingSpeechPreroll()].append(pcm, start: start)

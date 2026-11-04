@@ -1,5 +1,6 @@
 import Foundation
 import ModuleCore
+import VoiceAudio
 import NookPluginSDK
 
 extension MeetingModel {
@@ -34,7 +35,7 @@ extension MeetingModel {
         } catch { meetingChat = .init(meetingID: chatOwner); chatLoadFailed = true; questionStatus = "Saved chat needs recovery. Original file kept. \(error.localizedDescription)" }
     }
     func setQuestionScope(_ scope: String) {
-        guard ["meeting", "library"].contains(scope), !askingQuestion, !active, !processing, !summarizing, !calendarBusy else { return }
+        guard permitMeetingWork(), ["meeting", "library"].contains(scope), !askingQuestion, !active, !processing, !summarizing, !calendarBusy else { return }
         resetQuestion(); questionScope = scope; notebookPage = "ask"; calendarPickerOpen = false; loadChat()
     }
     func resetQuestion() {
@@ -46,16 +47,28 @@ extension MeetingModel {
         do { try store?.saveChat(meetingChat); currentChatTurn = nil; return true }
         catch { currentChatTurn = nil; questionStatus = "Answer retained in this window, but chat could not be saved: \(error.localizedDescription)"; return false }
     }
-    func cancelQuestion() {
+    func cancelQuestion(force: Bool = false) {
+        if !force, (questionTask != nil || questionRequest != nil), let questionOwner,
+           questionOwner != LocalFoundationModelWork.currentOwner { return }
+        let originalTask = questionTask
         questionEpoch = UUID(); questionTask?.cancel(); questionTask = nil
-        if let questionRequest { cancelQuestionInvocation?(questionRequest) }
+        if let questionRequest {
+            if let original = capturedMeetingProviders[questionRequest] {
+                do { try original.request.cancel() }
+                catch { providerCancelIssues[questionRequest] = "cancel-enqueue-failed" }
+            } else if captureProviderRequest == nil { cancelQuestionInvocation?(questionRequest) }
+            settleMeetingProvider(questionRequest, originalTask: originalTask)
+        }
         if currentChatTurn != nil { _ = finishChatTurn("stopped", status: "Question stopped. Already-sent text cannot be recalled.") }
         questionRequest = nil; pendingQuestionProvider = nil; askingQuestion = false
     }
     func prepareQuestion(_ question: String) {
+        guard permitMeetingWork() else { return }
+        let owner = LocalFoundationModelWork.currentOwner
         guard !importing, !askingQuestion, !processing, !summarizing, !catchingUp, !calendarBusy, !["preparing", "finishing"].contains(phase), canAskMeeting, !chatLoadFailed,
               questionScope != "library" || !active, let store else { questionStatus = "Choose a transcript, or Ask saved meetings when recording is stopped."; return }
         cancelQuestion(); questionSnapshot = nil; questionAnswer = nil; highlightedUtterance = ""; highlightedCitation = ""; highlightedSourceText = ""
+        questionOwner = owner
         questionText = question.trimmingCharacters(in: .whitespacesAndNewlines); askingQuestion = true; questionStatus = "Selecting transcript passages on this Mac…"
         let epoch = questionEpoch, provider = asrProvider, live = showingLiveTranscript, meeting = selected, transcript = transcript, identity = chatIdentity
         let scope = questionScope, filter = questionLibraryFilter.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -78,31 +91,51 @@ extension MeetingModel {
                 self.questionStatus = error is CancellationError ? "Question stopped" : error.localizedDescription
             }
         }
+        retainMeetingTask(questionTask, owner: owner)
     }
     func sendQuestion() {
+        guard allowProductEffect(.provider) else{return}
+        guard permitMeetingWork() else { return }
+        let owner = LocalFoundationModelWork.currentOwner
+        guard permitsMeetingProvider() else { questionStatus = "Provider request limit reached; no new request was sent."; return }
         guard !askingQuestion, !chatLoadFailed, let snapshot = questionSnapshot, meetingChat.meetingID == chatOwner,
               let entry = questionProviders.first(where: { $0.address.key == questionProvider }), let invokeQuestion else {
             questionStatus = "Allow a cited-answer assistant for Voice in Nook Settings → Modules."; return
         }
+        var reservedRequest: UUID?
         do {
             try snapshot.validate()
             for source in snapshot.sources { _ = try source.resolve(meetingID: source.meetingID, transcript: questionTranscript(source)) }
             let values = PluginEvidenceChatContract.accepts(entry) ? try PluginEvidenceChatContract.values(snapshot.question, history: snapshot.context) : try snapshot.question.values()
+            // Reserve the actual context budget before even the local pending
+            // chat write. A refused reservation has no file or provider effect.
+            let request = UUID(), epoch = UUID()
+            let original = captureProviderRequest?(request)
+            if let original { capturedMeetingProviders[request] = (owner, original); reservedRequest = request }
+            else if captureProviderRequest != nil { throw VoiceProblem.message("The original provider connection is no longer available.") }
             let turn = MeetingChatTurn(evidence: snapshot, assistant: entry.action!.title)
             var next = meetingChat; next.turns.append(turn); try store?.saveChat(next)
             meetingChat = next; currentChatTurn = turn.id; chatPage = 0
-            let request = UUID(), epoch = UUID()
+            questionOwner = owner
+            if original == nil { markMeetingUnverified("provider-local-write-return-unavailable", owner: owner) }
+            pendingMeetingProviders[request] = owner; providerEffectUncertain.insert(owner)
             questionEpoch = epoch; questionRequest = request; pendingQuestionProvider = entry; questionAnswer = nil; askingQuestion = true
             questionStatus = "Asking \(entry.action!.title) · previewed text sent to its service…"
-            invokeQuestion(request, entry.address, values)
+            if let original { try original.invoke(address: entry.address, values: values) }
+            else { invokeQuestion(request, entry.address, values) }
             questionTask = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(185))
                 guard !Task.isCancelled, let self, self.questionEpoch == epoch, self.questionRequest == request else { return }
                 self.cancelQuestion(); self.questionSnapshot = nil; self.questionStatus = "Assistant timed out. Chat and transcript are retained."
             }
-        } catch { questionStatus = error.localizedDescription }
+            retainMeetingTask(questionTask, owner: owner)
+        } catch {
+            if let reservedRequest, questionRequest != reservedRequest { settleMeetingProvider(reservedRequest) }
+            cancelQuestion(force: true); questionStatus = error.localizedDescription
+        }
     }
     func receiveQuestion(_ request: UUID, update: PluginRunUpdate) {
+        if update.phase.terminal { settleMeetingProvider(request, originalTask: questionRequest == request ? questionTask : nil) }
         guard questionRequest == request, let entry = pendingQuestionProvider, let snapshot = questionSnapshot, update.phase.terminal else { return }
         questionTask?.cancel(); questionTask = nil; questionRequest = nil; pendingQuestionProvider = nil; askingQuestion = false
         do {
@@ -138,7 +171,7 @@ extension MeetingModel {
         questionStatus = "Saved exchange · inspect its exact original disclosure; Send asks again after source verification"
     }
     func newMeetingChat(restore: Bool = false) {
-        guard !occupied, let store, !chatLoadFailed, questionScope == "library" || selected != nil else { return }
+        guard permitMeetingWork(), !occupied, let store, !chatLoadFailed, questionScope == "library" || selected != nil else { return }
         do {
             if restore && !store.hasPreviousChat(chatOwner) { throw VoiceProblem.message("No previous conversation to restore.") }
             let next = restore ? try store.chat(chatOwner, previous: true) : MeetingChat(meetingID: chatOwner)
@@ -147,7 +180,7 @@ extension MeetingModel {
         } catch { questionStatus = error.localizedDescription }
     }
     func openQuestionSource(_ citation: String, turn: String = "") {
-        guard !askingQuestion, !processing, !summarizing, let store else { return }
+        guard permitMeetingWork(), !askingQuestion, !processing, !summarizing, let store else { return }
         let saved = UUID(uuidString: turn).flatMap { id in meetingChat.turns.first { $0.id == id }?.evidence }
         guard turn.isEmpty || saved != nil else { questionStatus = "Saved exchange unavailable. Its source was not opened."; return }
         guard let evidence = saved ?? questionSnapshot, let source = evidence.sources.first(where: { $0.evidence.id == citation }) else { return }
@@ -156,7 +189,7 @@ extension MeetingModel {
             highlightedCitation = citation
             guard !active else { questionSnapshot = evidence; questionStatus = "Inspect the exact excerpt; recording continues"; return }
             stopPlayback(); selected = try store.load(source.meetingID); duration = selected?.duration ?? 0
-            asrProvider = source.provider; UserDefaults.standard.set(asrProvider.rawValue, forKey: "meetingASRProvider")
+            asrProvider = source.provider; storeMeetingPreference(asrProvider.rawValue, forKey: "meetingASRProvider")
             showingLiveTranscript = source.live; transcript = original
             hasLiveTranscript = (try? store.liveTranscript(source.meetingID, provider: source.provider)) != nil
             hasRefinedTranscript = (try? store.transcript(source.meetingID, provider: source.provider)) != nil

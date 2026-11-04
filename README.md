@@ -1,3 +1,34 @@
+**October31: dictation stream framing repaired locally.** Actual newline/order/all-record validation now rejects broken or premature terminal output and keeps readiness metadata out of transcripts. Unchanged product19methods=11targetedred/8positive; final freshinternal normalbuild0/exact119pass0fail0skip (prior107+12new), independent2901066e raw/source audit;778tested inputs. Original ENOSPC failedattempt and exactcache relocation retained, lostexit not reconstructed. No models/audio/GUI/sign/install/SDK/worker changes. RealASR/native/installed/broker/full010 remain open. [Results](../NeroNook/reports/dictation-stream-framing-2026-10-31/RESULTS001.md).
+
+**October31: direct dictation retirement qualified locally.** Original preparation/finalization and captured pipeline/stream resources survive Stop until actual return; synchronous work reservation prevents setup callbacks from restarting after Cancel. Final normal build0/exact107pass0fail0skip (prior85+22new), independent source/raw/adoption audit,4existing+5new/777tested inputs. Source/SDK/host/protected artifacts retained; no model/audio/GUI/sign/install/shared API changes. Actual Apple/microphone/native/installed, parser framing, broader IO/system broker/full010 remain open. [Results](../NeroNook/reports/direct-dictation-retirement-2026-10-31/RESULTS001.md).
+
+**October31: live/prepared recognizer retirement qualified locally.** Original start/reader/pump/results/analyzer-cancel/launched-process wait stay owned; preloader waits actual release and protects reentrant status/readiness. Actual Talk/dictation entry joins captured retirement without another mic owner. Normal build0/exact85pass0fail0skip; independent03b88a4f audit,6existing+1new/772tested inputs joined. No actual models/capture/synthesis/GUI/sign/install/SDK change. Real Apple runtime, direct SpeechPipeline cleanup, broader IO/native/system-broker/full010 remain open; frozen qualifiers are historical. [Results](../NeroNook/reports/recognizer-retirement-2026-10-31/RESULTS001.md).
+
+**October31: original speech-worker retirement qualified locally.** Actual reader/reap handles survive Stop; owning AppleVoice2/Qwen replacement and Talk busy state retain them. Per-request cancellable Qwen preparation permits keep the latest reply from losing capacity to cancelled waiters. Normal build0/exact60pass0fail0skip, independent final audit PASS;9existing+5new/771 inputs joined. No model/audio/GUI/sign/install/SDK change. Full ASR/analyzer/writer/broker/native/installed acceptance remains open; historical frozen qualifiers must not be replayed after document updates. [Results](../NeroNook/reports/speech-worker-retirement-2026-10-31/RESULTS001.md).
+
+**October31 · actual Talk preparation ownership adopted locally:** The original preparation Task/observer is reserved before callbacks, checked before microphone permission and retained through Stop until return. Busy/draining admissions prevent replacement during that interval; meeting local conflicts now include Qwen reference/picker work without self-blocking paused Resume. Actual private provider tests import ModuleApp without main/VoiceModel/stores/hotkeys and always cancel before permission. Normal app build0/37exactpass29prior+8new/0skip; independent source/raw/adoption PASS. No models/capture/GUI/sign/install/SDK change. Nested cleanup, system-wide service, native audio/installed acceptance remain open; old qualifier preimages are retired. [Results](reports/conversation-preparation-owner-2026-10-31/RESULTS001.md).
+
+**October31 · meeting owner-label correctness adopted locally:** Automatic Mic/System speaker placeholders now remain Unassigned in new notes and saved structured cards/search/Markdown; future manual assignments use consistent Room/Call labels. Explicit names, dates, task state, raw notebook/evidence bytes and editor/audit text are preserved. Original unchanged-product witness5red/2positive/73assertions; repaired normalbuild0/36affectedpass29prior+7new/0skip, independently audited/adopted. No models/audio/cloud/GUI/sign/install/SDK change; installedVoice0.22.6 and recording-trial-unrun remain. Current qualifier preimages are obsolete after adoption: never replay it. [Results](reports/meeting-owner-placeholders-2026-10-31/RESULTS001.md).
+
+**October30 · Voice0.22.6 installed locally:**
+Reviewed clean release preserves recording gaps/converter tails and live ASR
+clock alignment.424installed files match;13othermodules/40grant bytes exact,
+SDK resources/entitlements retained. Native settings/Fn/model choices and four
+older meetings remain. The owner clarified October30 that the recording trial has NOT been run.
+Earlier positive reports are superseded; live words, Pause/Resume, saving and
+saved timing remain unverified. No programmatic
+capture or shared-speech approval claim. [Delivery and limits](reports/meeting-end-to-end-2026-10-29/README.md).
+
+**October29 · local meeting-timing source candidate (not installed):**
+Separate input/output clocks preserve captured gaps, resampler tails and source
+alignment through rotation/Resume. Backward clocks and format changes explicitly
+refuse after preserving accepted tails; live ASR pads bounded short gaps.
+Clean225Swift/15worker-policy checks pass; actual release workers retain all36
+contiguous-case texts. Actual cached-human file/live speaker baseline is30.70%/
+32.08%pooled DER, showing remaining missed activity. No new WER/live-recording or
+installed quality claim; Voice0.22.5 remains installed. No SDK/cloud/capture/public
+change. [Evidence and limits](reports/meeting-end-to-end-2026-10-29/README.md).
+
 **October 21 · local 0.22.2 candidate:** opening audio queues before recognition
 preparation; 40 ms speaker edge timing reduces missed speaker time by 13.49%
 across three short public AMI windows. 180 Swift / nine worker tests, independent

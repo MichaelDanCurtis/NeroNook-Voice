@@ -16,7 +16,7 @@ public struct MeetingChatSource: Codable, Sendable {
     public let fragment: Bool
     public func resolve(meetingID: UUID, transcript: MeetingTranscript) throws -> MeetingUtterance {
         guard meetingID == self.meetingID, let line = transcript.utterances.first(where: { $0.id == utteranceID }),
-              MeetingQuestionSnapshot.fingerprint(line, names: transcript.names) == fingerprint else {
+              MeetingQuestionSnapshot.sourceFingerprint(line,transcript:transcript) == fingerprint else {
             throw VoiceProblem.message("This transcript source was changed or removed. The saved answer is retained; ask again for current evidence.")
         }
         return line
@@ -94,13 +94,17 @@ public struct MeetingChatEvidence: Codable, Sendable {
             var chosen: (MeetingTranscript, MeetingASRProvider, Bool)?
             for provider in [preferred] + MeetingASRProvider.allCases.filter({ $0 != preferred }) {
                 for live in [false, true] {
-                    let name = live ? "live-" + provider.transcriptFile : provider.transcriptFile
-                    let url = store.folder(meeting.id).appendingPathComponent(name)
-                    guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize else { continue }
-                    guard bytes + size <= 64_000_000 else { complete = false; continue }
-                    bytes += size
-                    let t = live ? try? store.liveTranscript(meeting.id, provider: provider) : try? store.transcript(meeting.id, provider: provider)
-                    if let t, !t.utterances.isEmpty { chosen = (t, provider, live); break }
+                    let v2 = !live && store.hasTranscriptV2(meeting.id,provider:provider)
+                    do {
+                        guard let size=try store.transcriptStorageByteCount(meeting.id,provider:provider,live:live) else{continue}
+                        guard bytes+size<=64_000_000 else{complete=false;if v2 {throw VoiceProblem.message("Transcription review exceeds this query's local evidence budget.")};continue}
+                        bytes+=size
+                        let t=live ? try store.liveTranscript(meeting.id,provider:provider) : try store.transcript(meeting.id,provider:provider)
+                        if let t {try t.requireResolvedTranscription();if !t.utterances.isEmpty{chosen=(t,provider,live);break}}
+                    } catch {
+                        // Never fall through from a V2 refusal to older/live/provider data.
+                        if v2 {throw error};complete=false
+                    }
                 }
                 if chosen != nil { break }
             }

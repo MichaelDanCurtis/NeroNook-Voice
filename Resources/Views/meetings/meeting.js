@@ -9,7 +9,7 @@ const $=id=>document.getElementById(id);let s={},previousLibrary='',previousSour
 const time=n=>{n=Math.max(0,Math.floor(n||0));return n>=3600?`${Math.floor(n/3600)}:${String(Math.floor(n/60)%60).padStart(2,'0')}:${String(n%60).padStart(2,'0')}`:`${String(Math.floor(n/60)).padStart(2,'0')}:${String(n%60).padStart(2,'0')}`;};
 function emit(name,values={}){nero.emit(name,values).catch(e=>{$('error').hidden=false;$('error').textContent=e.message||'This control is unavailable.';});}
 function parse(value){if(value&&typeof value==='object')return value;try{return JSON.parse(value||'[]');}catch{return[];}}
-function list(){$('library').replaceChildren();for(const m of parse(s.library)){const b=document.createElement('button');b.className=m.id===s.selected?'selected':'';b.disabled=s.busy;const title=document.createElement('strong');title.textContent=m.title;const info=document.createElement('small');info.textContent=`${m.date} · ${time(+m.duration)}${m.calendar?' · ▦ '+m.calendar:''}`;b.append(title,info);b.onclick=()=>{if(notebookDirty){$('notesSave').textContent='Save your notes before switching meetings.';return;}emit('select',{id:m.id});};$('library').append(b);}}
+function list(){$('transcriptionSearchNotice').textContent=s.searchNotice||'';$('transcriptionSearchNotice').hidden=!s.searchNotice;$('library').replaceChildren();for(const m of parse(s.library)){const b=document.createElement('button');b.className=m.id===s.selected?'selected':'';b.disabled=s.busy;const title=document.createElement('strong');title.textContent=m.title;const info=document.createElement('small');info.textContent=`${m.date} · ${time(+m.duration)}${m.calendar?' · ▦ '+m.calendar:''}${m.transcriptionStatus?' · '+m.transcriptionStatus:''}`;b.append(title,info);b.onclick=()=>{if(notebookDirty){$('notesSave').textContent='Save your notes before switching meetings.';return;}emit('select',{id:m.id});};$('library').append(b);}}
 $('record').onclick=()=>emit('record',{title:$('name').value,mic:$('mic').checked,source:$('source').value,live:$('liveEnabled').checked});
 $('liveEnabled').onchange=()=>emit('process',{action:$('liveEnabled').checked?'live:on':'live:off'});
 $('liveASR').onchange=()=>emit('process',{action:'asr:'+$('liveASR').value});$('prepareLive').onclick=()=>emit('process',{action:'prepareASR'});
@@ -29,7 +29,7 @@ for(const id of ['new','refresh','delete'])$(id).disabled=!!s.busy;$('files').di
 if(previousLibrary!==s.library||list.selection!==s.selected||list.active!==s.busy){previousLibrary=s.library;list.selection=s.selected;list.active=s.busy;list();}
 if(previousSources!==s.sources){previousSources=s.sources;const value=$('source').value;$('source').replaceChildren();for(const src of [{id:'none',name:'Microphone only'},{id:'all',name:'All system audio'},...parse(s.sources)]){const option=document.createElement('option');option.value=src.id;option.textContent=src.name;$('source').append(option);}$('source').value=Array.from($('source').options).some(x=>x.value===value)?value:'none';}
 $('marks').replaceChildren();for(const mark of parse(s.bookmarks)){const b=document.createElement('button');b.textContent=`⚑ ${time(mark.time)}`;b.disabled=s.busy;b.onclick=()=>emit('seek',{time:mark.time});$('marks').append(b);}
-renderCallAndSpeakers();renderReview();renderNotebook();renderLive();renderQuestion();renderCalendar();renderOrganization();renderLibraryFeedback();scrollCitedPassage();
+renderCallAndSpeakers();renderReview();renderTranscriptionReview();renderNotebook();renderLive();renderQuestion();renderCalendar();renderOrganization();renderLibraryFeedback();scrollCitedPassage();
 });
 for(const [id,action] of [['transcribe','transcribe'],['prepareASR','prepareASR'],['prepareSpeakers','prepare'],['identify','speakers'],['cancelProcess','cancel']])$(id).onclick=()=>emit('process',{action});
 $('asr').onchange=()=>emit('process',{action:'asr:'+$('asr').value});
@@ -45,6 +45,7 @@ $('prepareASR').hidden=s.asrProvider==='apple'||s.parakeetReady;$('prepareASR').
 $('transcribe').disabled=s.busy||s.transcriptComplete||(s.asrProvider!=='apple'&&!s.parakeetReady);
 $('transcribe').textContent=s.transcriptComplete?'Transcript complete':s.hasTranscript?'Continue transcript':'Transcribe';
 if(s.liveDraft&&!s.transcriptComplete)$('transcribe').textContent='Refine saved audio';
+$('refinementNotice').textContent=s.refinementNotice||'';$('refinementNotice').hidden=!s.refinementNotice;
 $('showLive').hidden=!s.hasLive;$('showRefined').hidden=!s.hasRefined;$('showLive').disabled=s.busy||s.liveDraft;$('showRefined').disabled=s.busy||!s.liveDraft;
 $('asrHint').textContent=s.asrProvider!=='apple'?'The selected MLX model runs in Nero Voice after an explicit local-model download. It auto-detects supported languages. Your Apple Speech transcript and edits stay separate.':'Apple Speech runs on this Mac. Switching models preserves this transcript and its corrections.';
 $('prepareSpeakers').hidden=s.speakersReady;$('prepareSpeakers').disabled=s.busy;$('identify').hidden=!s.speakersReady;$('identify').disabled=s.busy||!s.hasTranscript;$('cancelProcess').hidden=!s.processing;$('progress').hidden=!s.processing;if(s.progress>0)$('progress').value=s.progress;else $('progress').removeAttribute('value');
@@ -53,7 +54,7 @@ $('pages').hidden=!s.hasTranscript;$('pageLabel').textContent=`${(s.page||0)+1} 
 const speakers=parse(s.speakers)||{};const key=(s.selected||'')+s.transcript+s.speakers+String(s.busy)+(s.highlight||'');
 if(reviewRevision!==key&&!$('transcript').contains(document.activeElement)){
 reviewRevision=key;$('transcript').replaceChildren();for(const line of parse(s.transcript)){
- const row=document.createElement('article');row.className='utterance'+(line.id===s.highlight?' highlighted':'');row.dataset.id=line.id;const head=document.createElement('div');head.className='utteranceHead';const seek=document.createElement('button');seek.textContent=time(+line.start);seek.title='Play from here';seek.onclick=()=>{emit('seek',{time:+line.start});if(!s.playing)emit('play');};const label=document.createElement('strong');label.textContent=(speakers[line.speaker]||`Unassigned · ${line.track==='mic'?'microphone':((parse(s.organization)||{}).origin?'imported audio':'call')}`)+(line.excerpt==='yes'?' · cited excerpt':'');const edit=document.createElement('button');edit.textContent='Edit';edit.disabled=s.busy;const body=document.createElement('p');body.textContent=line.text;head.append(seek,label,edit);row.append(head,body);
+ const row=document.createElement('article');row.className='utterance'+(line.id===s.highlight?' highlighted':'');row.dataset.id=line.id;const head=document.createElement('div');head.className='utteranceHead';const seek=document.createElement('button');seek.textContent=time(+line.start);seek.title='Play from here';seek.onclick=()=>{emit('seek',{time:+line.start});if(!s.playing)emit('play');};const label=document.createElement('strong');label.textContent=(speakers[line.speaker]||`Unassigned · ${line.track==='mic'?'microphone':((parse(s.organization)||{}).origin?'imported audio':'call')}`)+(line.recognitionAlternative==='yes'?' · kept recognition version · may overlap':'')+(line.excerpt==='yes'?' · cited excerpt':'');const edit=document.createElement('button');edit.textContent='Edit';edit.disabled=s.busy;const body=document.createElement('p');body.textContent=line.text;head.append(seek,label,edit);row.append(head,body);
  edit.onclick=()=>{const text=document.createElement('textarea');text.value=line.text;text.readOnly=line.truncated==='yes';text.maxLength=4000;const select=document.createElement('select');for(const [id,name] of [['','Unassigned'],...['mic','system'].flatMap(track=>[0,1,2,3,4,5,6,7].map(n=>[`${track}-${n}`,speakers[`${track}-${n}`]||`${track==='mic'?'Mic':'Call'} speaker ${n+1}`]))]){const o=document.createElement('option');o.value=id;o.textContent=name;select.append(o);}select.value=line.speaker;const save=document.createElement('button');save.textContent='Save correction';save.onclick=()=>{emit('review',{id:line.id,text:text.value,speaker:select.value,editText:line.truncated!=='yes'});reviewRevision='';document.activeElement?.blur();};const cancel=document.createElement('button');cancel.textContent='Cancel';cancel.onclick=()=>{reviewRevision='';document.activeElement?.blur();renderReview();};body.replaceWith(text);edit.disabled=true;row.append(select,save,cancel);text.focus();};$('transcript').append(row);
 }}
 const namesKey=(s.selected||'')+s.speakers+String(s.busy);if(speakerRevision!==namesKey&&!$('speakers').contains(document.activeElement)){speakerRevision=namesKey;$('speakers').replaceChildren();for(const [id,name] of Object.entries(speakers)){const wrap=document.createElement('label');const input=document.createElement('input');input.value=name;input.maxLength=40;input.title='Rename speaker';input.disabled=s.busy;input.onchange=()=>emit('review',{id:'name:'+id,text:input.value,speaker:'',editText:false});wrap.append(input);$('speakers').append(wrap);}}
@@ -135,6 +136,15 @@ function renderNoteEvidence(){
 $('bookmark').onclick=()=>emit('process',{action:'bookmark'});
 
 function renderLive(){
+ const provider=s.asrProvider||'apple';
+ const model={apple:'Apple Speech',nemotron:'Nemotron 3.5',parakeet:'Parakeet'}[provider];
+ let hint='Audio-only recording. Transcribe the saved audio afterward.';
+ if(s.liveEnabled){
+  if(!model)hint='Choose a supported speech model for live transcription.';
+  else if(provider!=='apple'&&!s.parakeetReady)hint=`Download ${model} to enable live transcription. Otherwise, audio-only recording; no model fallback.`;
+  else hint=provider==='parakeet'?'Parakeet updates at pauses or every 10 seconds.':'Live words · '+model+'.';
+ }
+ $('liveHint').textContent='Audio and words stay on this Mac. '+hint;
  $('liveEnabled').checked=!!s.liveEnabled;$('liveEnabled').disabled=s.busy;$('liveASR').value=s.asrProvider||'apple';$('liveASR').disabled=s.busy;
  $('prepareLive').hidden=s.asrProvider==='apple'||s.parakeetReady;$('prepareLive').disabled=s.busy;$('record').disabled=!!s.busy;
  $('cancelLivePrepare').hidden=!s.processing;
@@ -270,4 +280,43 @@ function renderLibraryFeedback(){
  $('emptyDetail').textContent=query?'Try a different word, or clear your search.':o.scope&&o.scope!=='all'?'Move a meeting here, or import a recording.':'Record or import a conversation to get started.';
  $('clearSearch').hidden=!query;$('clearSearch').disabled=!!s.busy;
  document.querySelector('.libraryPages').hidden=empty;
+}
+
+// Each closure captures the exact displayed tuple. A later render does not retarget it.
+function renderTranscriptionReview(){
+ const view=parse(s.transcriptionReview)||{},shown=(+view.count||0)>0;
+ document.body.classList.toggle('transcriptionReviewMode',shown&&!!view.open);
+ $('transcriptionReviewPanel').hidden=!shown;
+ if(!shown)return;
+ $('transcriptionComparison').hidden=!view.open;$('transcriptionReviewClose').hidden=!view.open;$('transcriptionReviewOpen').hidden=!!view.open;
+ $('transcriptionReviewHeading').textContent=(view.processing?'Recognition in progress':view.recognitionComplete?'Recognition complete':'Recognition incomplete')+' · '+view.count+' passages need review';
+ $('transcriptionReviewStatus').textContent=view.status||'Your corrections are retained.';
+ $('transcriptionReviewStop').hidden=!view.processing;$('transcriptionReviewStop').disabled=!view.processing;
+ $('transcriptionReviewProgress').hidden=!view.processing;if(+view.progress>0)$('transcriptionReviewProgress').value=+view.progress;else $('transcriptionReviewProgress').removeAttribute('value');
+ // Existing cancel action retains the current original processing owner/task guard.
+ $('transcriptionReviewStop').onclick=()=>{if((parse(s.transcriptionReview)||{}).processing)emit('process',{action:'cancel'});};
+ $('transcriptionProtectedTitle').textContent=view.protectedTitle||'';$('transcriptionCandidateTitle').textContent=view.candidateTitle||'';$('transcriptionCandidateOrigin').textContent=[view.modelRevision,view.runtimeRevision,view.attempt?'Attempt '+view.attempt:''].filter(Boolean).join(' · ');
+ $('transcriptionCandidateText').textContent=view.candidateText||'';$('transcriptionProtectedText').textContent=view.protectedText||'';
+ $('transcriptionProtectedPage').textContent=(+view.protectedRow+1)+' / '+(+view.protectedRows||1);
+ const tuple={meeting:view.meeting,provider:view.provider,revision:view.revision,candidate:view.candidate,digest:view.digest};
+ const captured=JSON.stringify(tuple);
+ const send=(choice,source='candidate',row=0,offset=0,candidate=tuple.candidate)=>{
+  const current=parse(s.transcriptionReview)||{};
+  if(current.busy||s.busy||(['keepCorrection','keepBoth'].includes(choice)&&!current.open)||JSON.stringify({meeting:current.meeting,provider:current.provider,revision:current.revision,candidate:current.candidate,digest:current.digest})!==captured)return;
+  emit('transcriptionReview',{...tuple,candidate,choice,source,row,offset});
+ };
+ $('transcriptionReviewOpen').onclick=()=>send('open');$('transcriptionReviewClose').onclick=()=>send('close');
+ $('transcriptionCandidateFirst').onclick=()=>send('page','candidate',0,0);
+ $('transcriptionCandidateMore').onclick=()=>{if(view.candidateMore)send('page','candidate',0,+view.candidateNext);};
+ $('transcriptionProtectedFirst').onclick=()=>send('page','protected',+view.protectedRow,0);
+ $('transcriptionProtectedMore').onclick=()=>{if(view.protectedMore)send('page','protected',+view.protectedRow,+view.protectedNext);};
+ $('transcriptionProtectedPrevious').onclick=()=>{if(+view.protectedRow>0)send('page','protected',+view.protectedRow-1,0);};
+ $('transcriptionProtectedNext').onclick=()=>{if(+view.protectedRow+1<+view.protectedRows)send('page','protected',+view.protectedRow+1,0);};
+ $('transcriptionCandidatePrevious').onclick=()=>{if(view.previousCandidate)send('page','candidate',0,0,view.previousCandidate);};
+ $('transcriptionCandidateNext').onclick=()=>{if(view.nextCandidate)send('page','candidate',0,0,view.nextCandidate);};
+ $('transcriptionKeepCorrection').onclick=()=>send('keepCorrection');$('transcriptionKeepBoth').onclick=()=>send('keepBoth');
+ for(const id of ['transcriptionReviewOpen','transcriptionReviewClose','transcriptionKeepCorrection','transcriptionKeepBoth','transcriptionCandidateFirst','transcriptionProtectedFirst'])$(id).disabled=!!view.busy;
+ $('transcriptionCandidateMore').disabled=!!view.busy||!view.candidateMore;$('transcriptionProtectedMore').disabled=!!view.busy||!view.protectedMore;
+ $('transcriptionProtectedPrevious').disabled=!!view.busy||!(+view.protectedRow>0);$('transcriptionProtectedNext').disabled=!!view.busy||!(+view.protectedRow+1<+view.protectedRows);
+ $('transcriptionCandidatePrevious').disabled=!!view.busy||!view.previousCandidate;$('transcriptionCandidateNext').disabled=!!view.busy||!view.nextCandidate;
 }

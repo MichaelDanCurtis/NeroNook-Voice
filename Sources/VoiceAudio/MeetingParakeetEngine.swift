@@ -35,13 +35,17 @@ public struct LocalASREngine {
         }
     }
     public func verify(_ folder: URL) async throws {
+        try Task.checkCancellation()
+        let receipt = MeetingCleanupContext.current
         let work = Task.detached {
             for item in files {
                 try Task.checkCancellation()
                 let url = folder.appendingPathComponent(item.name)
                 let values = try url.resourceValues(forKeys: [.fileSizeKey, .isSymbolicLinkKey])
                 guard values.isSymbolicLink == false, values.fileSize == item.size else { throw VoiceProblem.message("Local speech model is incomplete") }
-                let file = try FileHandle(forReadingFrom: url); defer { try? file.close() }
+                try Task.checkCancellation()
+                let file = try FileHandle(forReadingFrom: url)
+                defer { if let receipt { receipt.close(file, context: "ASR verification close failed") } else { try? file.close() } }
                 var hash = SHA256()
                 while let data = try file.read(upToCount: 1_048_576), !data.isEmpty {
                     try Task.checkCancellation(); hash.update(data: data)
@@ -67,7 +71,9 @@ public struct LocalASREngine {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 180
         config.timeoutIntervalForResource = 3600
-        let session = URLSession(configuration: config); defer { session.invalidateAndCancel() }
+        let ownedSession = MeetingOwnedSession(configuration: config, receipt: MeetingCleanupContext.current)
+        let session = ownedSession.session
+        do {
         for item in files {
             try Task.checkCancellation()
             let url = URL(string: "https://huggingface.co/\(repository)/resolve/\(revision)/\(item.name)")!
@@ -82,10 +88,12 @@ public struct LocalASREngine {
         try await verify(staging); try Task.checkCancellation()
         if fm.fileExists(atPath: directory.path) { try fm.removeItem(at: directory) }
         try fm.moveItem(at: staging, to: directory)
+        } catch { await ownedSession.invalidateAndWait(); throw error }
+        await ownedSession.invalidateAndWait()
     }
 
-    @MainActor private static var jobs: [UUID: Process] = [:]
-    @MainActor public static func stopJobs() { for job in jobs.values where job.isRunning { LocalModelProcess.stop(job) }; jobs = [:] }
+    @MainActor private static var jobs: [UUID: SavedMeetingWorker] = [:]
+    @MainActor public static func stopJobs() { for job in Array(jobs.values) { job.stop() } }
 
     /// A dictation uses the same pinned worker as Meetings. Its PCM is held
     /// in memory during recording, then written only to this private temporary
@@ -121,37 +129,30 @@ public struct LocalASREngine {
         try Task.checkCancellation()
         let output = working.appendingPathComponent("parakeet-\(UUID().uuidString).json")
         let log = working.appendingPathComponent("parakeet-progress-\(UUID().uuidString).txt")
-        FileManager.default.createFile(atPath: log.path, contents: nil)
-        let writer = try FileHandle(forWritingTo: log)
-        defer { try? writer.close(); try? FileManager.default.removeItem(at: output); try? FileManager.default.removeItem(at: log) }
         let process = Process(); process.executableURL = helper
         process.arguments = (provider == .parakeet ? ["--parakeet"] : []) + [directory.path, audio.path, output.path, track]
-        process.standardOutput = writer; process.standardError = writer; process.standardInput = FileHandle.nullDevice
-        try await LocalModelProcess.waitForAvailable()
+        return try await Self.transcribePreparedWorker(process: process, output: output, log: log, track: track, progress: progress)
+    }
+    /// The same post-verification worker/registry/decoder path, with an authored
+    /// Process for no-model transport tests. Public entry keeps verification.
+    @MainActor static func transcribePreparedWorker(process: Process, output: URL, log: URL, track: String,
+        readCheckpoint: (@Sendable (SavedMeetingReadKind) -> Void)? = nil,
+        progress: @escaping @MainActor (Double) -> Void) async throws -> [MeetingUtterance] {
+        let worker = SavedMeetingWorker(process: process, output: output, log: log, outputLimit: 32_000_000,
+            pollInterval: .milliseconds(350), progressTimeout: 180,
+            processFailure: "Local speech transcription failed. Your recording is retained.",
+            limitFailure: "Local transcript exceeded its limit",
+            timeoutFailure: "Speech recognition stopped making progress. Your recording is retained.", readCheckpoint: readCheckpoint)
+        let job = UUID(); Self.jobs[job] = worker
+        defer { Self.jobs[job] = nil }
+        let data = try await worker.run(progress: progress)
         try Task.checkCancellation()
-        try LocalModelProcess.launch(process); let job = UUID(); Self.jobs[job] = process
-        defer { Self.jobs[job] = nil; if process.isRunning { LocalModelProcess.stop(process) } }
-        var lastProgress = Date(); var lastFraction = -1.0
-        do {
-            while process.isRunning {
-                try await Task.sleep(for: .milliseconds(350))
-                try Task.checkCancellation()
-                if let data = try? Data(contentsOf: log), data.count < 1_000_000,
-                   let line = String(data: data, encoding: .utf8)?.split(separator: "\n").last(where: { $0.hasPrefix("progress ") }),
-                   let fraction = Double(line.dropFirst(9)), fraction.isFinite {
-                    progress(min(1, max(0, fraction)))
-                    if fraction > lastFraction { lastFraction = fraction; lastProgress = Date() }
-                }
-                guard Date().timeIntervalSince(lastProgress) < 180 else { throw VoiceProblem.message("Speech recognition stopped making progress. Your recording is retained.") }
-            }
-            try Task.checkCancellation()
-            guard process.terminationStatus == 0 else { throw VoiceProblem.message("Local speech transcription failed. Your recording is retained.") }
-            guard (try output.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? Int.max < 32_000_000 else { throw VoiceProblem.message("Local transcript exceeded its limit") }
-            let lines = try JSONDecoder().decode([MeetingUtterance].self, from: Data(contentsOf: output))
-            guard lines.count <= 40_000, lines.allSatisfy({ $0.track == track && $0.start.isFinite && $0.end.isFinite && $0.start >= 0 && $0.end >= $0.start && $0.end <= 4 * 3600 + 30 && $0.text.utf8.count <= 16_000 }) else {
-                throw VoiceProblem.message("Speech recognition returned an invalid transcript")
-            }
-            return lines
-        } catch { if process.isRunning { LocalModelProcess.stop(process) }; throw error }
+        try worker.checkActive()
+        let lines = try JSONDecoder().decode([MeetingUtterance].self, from: data)
+        guard lines.count <= 40_000, lines.allSatisfy({ $0.track == track && $0.start.isFinite && $0.end.isFinite && $0.start >= 0 && $0.end >= $0.start && $0.end <= 4 * 3600 + 30 && $0.text.utf8.count <= 16_000 }) else {
+            throw VoiceProblem.message("Speech recognition returned an invalid transcript")
+        }
+        try worker.checkActive()
+        return lines
     }
 }

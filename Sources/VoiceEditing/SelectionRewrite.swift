@@ -27,17 +27,25 @@ public extension SelectionEditor { func restoreFocus() {} }
     public var canUndo: Bool { phase == .applied && edit != nil }
     private let editor: any SelectionEditor
     private let generate: (String, SelectionTransformation) async throws -> String
+    /// Native owner context captured synchronously for this original transform.
+    /// Generic closure; the editing module has no dependency on speech/model APIs.
+    public var captureGenerator: (() -> ((String, SelectionTransformation) async throws -> String))?
     private var edit: DictationEdit?
     private var epoch = UUID()
     private var sessionID = UUID()
     private var work: Task<Void, Never>?
     private var expiry: Task<Void, Never>?
+    private var originalRetirement: Task<Void, Never>?
+    private var retirementID: UUID?
+    public var retiring: Bool { originalRetirement != nil }
+    public func retirementCompletion() -> Task<Void, Never>? { originalRetirement }
     private let lifetime: Duration
     public init(editor: any SelectionEditor, lifetime: Duration = .seconds(300), generate: @escaping (String, SelectionTransformation) async throws -> String) {
         self.editor = editor; self.generate = generate; self.lifetime = lifetime
     }
     public func begin() throws {
         guard !active else { return }
+        guard !retiring else { throw SelectionProblem.unavailable }
         let value = try editor.capture()
         capture = value; result = value.text; edit = nil; epoch = UUID(); sessionID = UUID()
         phase = .reviewing; status = "Choose a change, or edit the preview. Nothing changes until Replace."
@@ -55,6 +63,7 @@ public extension SelectionEditor { func restoreFocus() {} }
         let token = UUID(); epoch = token; phase = .generating
         // Keep a single original-selection source across retries/operation changes.
         let operation = operation
+        let generate = captureGenerator?() ?? self.generate
         status = "\(operation.rawValue) · Apple Intelligence · on this Mac"
         work = Task { [weak self] in
             guard let self else { return }
@@ -106,7 +115,18 @@ public extension SelectionEditor { func restoreFocus() {} }
         }
     }
     public func close(returnToEditor: Bool = false) {
-        epoch = UUID(); sessionID = UUID(); work?.cancel(); work = nil; expiry?.cancel(); expiry = nil
+        epoch = UUID(); sessionID = UUID()
+        let originalWork = work, originalExpiry = expiry, previous = originalRetirement
+        work = nil; expiry = nil
+        originalWork?.cancel(); originalExpiry?.cancel()
+        if originalWork != nil || originalExpiry != nil {
+            let id = UUID(); retirementID = id
+            originalRetirement = Task { [weak self] in
+                await previous?.value; await originalWork?.value; await originalExpiry?.value
+                guard let self, self.retirementID == id else { return }
+                self.originalRetirement = nil; self.retirementID = nil; self.changed?()
+            }
+        }
         if returnToEditor { editor.restoreFocus() }
         capture = nil; result = ""; edit = nil; phase = .closed; status = ""; editor.forget(); changed?()
     }

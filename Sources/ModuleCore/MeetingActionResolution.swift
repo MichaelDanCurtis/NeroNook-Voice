@@ -29,6 +29,12 @@ public struct MeetingActionResolution: Codable, Equatable, Identifiable, Sendabl
     public var fact: String {
         (owner ?? "Unassigned") + ": " + task + (deadline.map { " · Due " + $0 } ?? " · No deadline stated")
     }
+    // Read-only presentation of historical structured notes. Stored owner/fact
+    // and evidence stay untouched so their validation and source links agree.
+    var presentedOwner: String? { owner.flatMap(Self.personName) }
+    var presentedFact: String {
+        (presentedOwner ?? "Unassigned") + ": " + task + (deadline.map { " · Due " + $0 } ?? " · No deadline stated")
+    }
     public func validate() throws {
         guard !task.isEmpty, task.utf8.count <= 160,
               owner.map({ !$0.isEmpty && $0.utf8.count <= 100 }) ?? true,
@@ -84,7 +90,10 @@ public struct MeetingActionResolution: Codable, Equatable, Identifiable, Sendabl
         let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty, value.utf8.count <= 100,
               !["i", "we", "you", "he", "she", "they", "someone", "the team", "nobody"].contains(value.lowercased()),
-              value.range(of: #"^(room|call|speaker|unassigned|unknown)(\s|\d|$)"#, options: [.regularExpression, .caseInsensitive]) == nil else { return nil }
+              value.range(of: #"^(room|call|speaker|unassigned|unknown)(\s|\d|$)"#, options: [.regularExpression, .caseInsensitive]) == nil,
+              // Older manual turn assignments saved these display aliases. They
+              // are track/cluster labels, not explicitly named people.
+              value.range(of: #"^(mic|system) speaker [0-7]$"#, options: [.regularExpression, .caseInsensitive]) == nil else { return nil }
         return value
     }
     private static func problem() -> VoiceProblem { .message("An action-item field did not match its original transcript evidence. Existing notes are retained.") }

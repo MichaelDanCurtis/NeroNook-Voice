@@ -10,6 +10,7 @@ public enum MeetingCallObservation {
     private static let teams = Set(["com.microsoft.teams2", "com.microsoft.teams"])
     private static let browsers = Set(["com.google.Chrome", "com.microsoft.edgemac", "com.apple.Safari", "org.mozilla.firefox", "company.thebrowser.Browser"])
     @MainActor public static func sample() async -> MeetingCallSignal? {
+        guard !Task.isCancelled else { return nil }
         let apps = NSWorkspace.shared.runningApplications.compactMap { app -> App? in
             guard let id = app.bundleIdentifier else { return nil }
             if teams.contains(id) { return .init(pid: app.processIdentifier, source: id, name: "Microsoft Teams", browser: false, dedicated: true) }
@@ -21,8 +22,9 @@ public enum MeetingCallObservation {
             }
             return nil
         }
-        guard !apps.isEmpty else { return nil }
+        guard !Task.isCancelled, !apps.isEmpty else { return nil }
         let work = Task.detached(priority: .utility) { () -> MeetingCallSignal? in
+            guard !Task.isCancelled else { return nil }
             let audio = MeetingProcessActivities.snapshot()
             var possible: MeetingCallSignal?
             for app in apps.sorted(by: { !$0.browser && $1.browser }) {

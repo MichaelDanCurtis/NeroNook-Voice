@@ -14,7 +14,28 @@ import ModuleCore
     private var pump: Task<Void, Error>?
     private var watchdog: Task<Void, Never>?
     private var reader: Task<Void, Never>?
+    private var outputReader:VoiceOriginalPipeReader?
+    // Observation-only fixture checkpoints; normal composition leaves nil.
+    var outputReadCheckpoint:(@Sendable()->Void)?
+    var didLaunchBeforeWait:(@MainActor()->Void)?
+    private var cleanup=MeetingCleanupReceipt()
+    private var ioCloser:VoiceOriginalIOClose?
+    private var escalationTimers:[Task<Void,Never>]=[]
+    private var terminationRequested=false
+    private func requestTermination(){
+        guard processWait != nil,!terminationRequested,let child=process else{return}
+        terminationRequested=true
+        if let timer=LocalModelProcess.stop(child){escalationTimers.append(timer)}
+    }
+    private let deadlines=SpeechWorkerRetirement()
+    private var finishCompletion:Task<Void,Never>?
+    private var finishing=false
+    public var resourceReturnIssue:String?{cleanup.issue}
     private var process: Process?
+    private var processWait: Task<Void, Never>?
+    private var startCompletion: Task<Void, Never>?
+    private var starting = false
+    private var retirement: Task<Void, Never>?
     private var input: Pipe?
     private var output: Pipe?
     private var buffer = Data()
@@ -22,6 +43,9 @@ import ModuleCore
     private var active = true
     private var ready = false
     private var closed = false
+    /// Consumer-side admission of the original serialized pump's end header.
+    /// This does not prove when an already-buffered worker response was made.
+    private var endInputEpoch: UUID?
     private var issue: String?
     private var prepared = false
     private var dormant = false
@@ -40,57 +64,97 @@ import ModuleCore
     public func start(provider: MeetingASRProvider, tracks: Set<String>, locale: String, helper: URL,
                       update: @escaping @MainActor (MeetingLiveUpdate) throws -> Void,
                       failure: @escaping @MainActor (String) -> Void) async throws {
-        guard active, !prepared, tracks.isSubset(of: ["mic", "system"]), !tracks.isEmpty else { throw VoiceProblem.message("Invalid live audio source") }
-        LocalModelProcess.releaseIdle()
-        self.update = update; self.failure = failure
+        guard tracks.isSubset(of: ["mic", "system"]), !tracks.isEmpty else { throw VoiceProblem.message("Invalid live audio source") }
+        let end = try beginStart()
+        defer { starting = false; end.finish() }
         let token = epoch
-        if provider == .apple {
-            let incoming = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1)!
-            for track in tracks.sorted() {
-                let transcriber = try await SpeechPipeline.prepare(localeIdentifier: locale, install: false, wordTiming: true)
-                try Task.checkCancellation(); guard active, epoch == token else { throw CancellationError() }
-                guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber], considering: incoming) else { throw VoiceProblem.message("No live speech format is available") }
-                let pair = AsyncThrowingStream<AnalyzerInput, Error>.makeStream(bufferingPolicy: .bufferingOldest(128))
-                let analyzer = SpeechAnalyzer(modules: [transcriber])
-                analyzers[track] = analyzer; bridges[track] = try AudioBridge(input: incoming, output: format, continuation: pair.continuation)
-                try await analyzer.prepareToAnalyze(in: format)
-                results.append(Task { [weak self] in
-                    do {
-                        for try await value in transcriber.results {
-                            try Task.checkCancellation(); guard let self, self.active, self.epoch == token else { throw CancellationError() }
-                            let start = value.range.start.seconds, end = CMTimeRangeGetEnd(value.range).seconds
-                            let event = MeetingLiveUpdate(track: track, start: start, end: end, text: String(value.text.characters), final: value.isFinal, words: value.isFinal ? MeetingTimedText.words(value.text, start: start, end: end) : nil)
-                            try self.accept(event)
-                        }
-                    } catch { if !Task.isCancelled { self?.fail(error.localizedDescription) }; throw error }
-                })
-                try await analyzer.start(inputSequence: pair.stream)
+        // Releasing an idle lease can synchronously cancel its original owner.
+        // Capture that resulting tail before creating any model/worker resource.
+        LocalModelProcess.releaseIdle()
+        let previousRetirement = Self.pendingRetirementCompletion()
+        self.update = update; self.failure = failure
+        do {
+            try requireCurrent(token)
+            await previousRetirement?.value
+            try requireCurrent(token)
+            if provider == .apple {
+                let incoming = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1)!
+                for track in tracks.sorted() {
+                    let transcriber = try await SpeechPipeline.prepare(localeIdentifier: locale, install: false, wordTiming: true)
+                    try requireCurrent(token)
+                    let available = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber], considering: incoming)
+                    try requireCurrent(token)
+                    guard let format = available else { throw VoiceProblem.message("No live speech format is available") }
+                    let pair = AsyncThrowingStream<AnalyzerInput, Error>.makeStream(bufferingPolicy: .bufferingOldest(128))
+                    let analyzer = SpeechAnalyzer(modules: [transcriber])
+                    try requireCurrent(token)
+                    analyzers[track] = analyzer; bridges[track] = try AudioBridge(input: incoming, output: format, continuation: pair.continuation, maxInputFrames: 16384)
+                    try requireCurrent(token)
+                    try await analyzer.prepareToAnalyze(in: format)
+                    try requireCurrent(token)
+                    results.append(Task { [weak self] in
+                        do {
+                            for try await value in transcriber.results {
+                                try Task.checkCancellation(); guard let self, self.active, self.epoch == token else { throw CancellationError() }
+                                let start = value.range.start.seconds, end = CMTimeRangeGetEnd(value.range).seconds
+                                let event = MeetingLiveUpdate(track: track, start: start, end: end, text: String(value.text.characters), final: value.isFinal, words: value.isFinal ? MeetingTimedText.words(value.text, start: start, end: end) : nil)
+                                try self.accept(event)
+                            }
+                        } catch { if !Task.isCancelled { self?.fail(error.localizedDescription) }; throw error }
+                    })
+                    try await analyzer.start(inputSequence: pair.stream)
+                    try requireCurrent(token)
+                }
+            } else {
+                let model = LocalASREngine(provider); try await model.verify(model.directory)
+                try requireCurrent(token)
+                try await configureWorker(executable: helper,
+                    arguments: (provider == .parakeet ? ["--parakeet"] : []) + ["--meeting-stream", model.directory.path])
+                try requireCurrent(token)
             }
-        } else {
-            let model = LocalASREngine(provider); try await model.verify(model.directory)
-            try Task.checkCancellation(); guard active, epoch == token else { throw CancellationError() }
-            try await configureWorker(executable: helper,
-                arguments: (provider == .parakeet ? ["--parakeet"] : []) + ["--meeting-stream", model.directory.path])
-        }
-        startPump(provider: provider)
-        prepared = true
+            startPump(provider: provider)
+            prepared = true
+        } catch { cancel(); throw error }
     }
     /// Prepared executable entry is separated from model preparation so the
     /// framed transport can be qualified with authored, audio-free workers.
     func startPreparedWorker(executable: URL, arguments: [String],
                              update: @escaping (MeetingLiveUpdate) throws -> Void,
                              failure: @escaping (String) -> Void) async throws {
-        guard active, !prepared else { throw CancellationError() }
+        let end = try beginStart()
+        defer { starting = false; end.finish() }
+        let token = epoch
+        LocalModelProcess.releaseIdle()
+        let previousRetirement = Self.pendingRetirementCompletion()
         self.update = update; self.failure = failure
-        try await configureWorker(executable: executable, arguments: arguments)
-        startPump(provider: .nemotron)
-        prepared = true
+        do {
+            try requireCurrent(token)
+            await previousRetirement?.value
+            try requireCurrent(token)
+            try await configureWorker(executable: executable, arguments: arguments)
+            try requireCurrent(token)
+            startPump(provider: .nemotron)
+            prepared = true
+        } catch { cancel(); throw error }
+    }
+    private func beginStart() throws -> AsyncStream<Void>.Continuation {
+        guard active, !prepared, !starting else { throw CancellationError() }
+        starting = true
+        cleanup=MeetingCleanupContext.current ?? cleanup
+        ioCloser=VoiceOriginalIOClose(cleanup)
+        let pair = AsyncStream<Void>.makeStream()
+        startCompletion = Task { for await _ in pair.stream {} }
+        return pair.continuation
+    }
+    private func requireCurrent(_ token: UUID) throws {
+        try Task.checkCancellation()
+        guard active, epoch == token else { throw CancellationError() }
     }
     /// A prepared, never-fed recognizer can be transferred exactly once before
     /// capture. No old PCM, timestamps, results or boundary may cross a lease.
     func transfer(update: @escaping (MeetingLiveUpdate) throws -> Void,
                   failure: @escaping (String) -> Void, dormant: Bool) -> Bool {
-        guard active, prepared, issue == nil, observedEnds.isEmpty, boundaries.isEmpty,
+        guard active, prepared, issue == nil, endInputEpoch == nil, observedEnds.isEmpty, boundaries.isEmpty,
               process?.isRunning != false else { return false }
         self.update = update; self.failure = failure; self.dormant = dormant
         lastReply = Date()
@@ -104,13 +168,9 @@ import ModuleCore
         child.standardInput = input; child.standardOutput = output; child.standardError = FileHandle.nullDevice
         _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
         let reads = AsyncThrowingStream<Data, Error>.makeStream(bufferingPolicy: .bufferingOldest(64))
-        output.fileHandleForReading.readabilityHandler = { file in
-            let data = file.availableData
-            if data.isEmpty { file.readabilityHandler = nil; reads.continuation.finish() }
-            else if case .dropped = reads.continuation.yield(data) {
-                reads.continuation.finish(throwing: VoiceProblem.message("Live speech output could not keep up"))
-            }
-        }
+        guard let closer=ioCloser else{throw CancellationError()}
+        let originalReader=VoiceOriginalPipeReader(handle:output.fileHandleForReading,closer:closer)
+        outputReader=originalReader;originalReader.install(reads.continuation,checkpoint:outputReadCheckpoint)
         reader = Task { [weak self] in
             do {
                 for try await data in reads.stream {
@@ -118,18 +178,28 @@ import ModuleCore
                     guard let self, self.active, self.epoch == token else { return }
                     try self.receive(data)
                 }
-                guard let self, self.active, self.epoch == token, !self.closed else { return }
-                self.fail("Live speech worker stopped. Audio recording continues.")
+                guard let self, self.active, self.epoch == token else { return }
+                guard self.buffer.isEmpty else {
+                    self.fail("Live speech output ended with an incomplete response. Saved audio is retained.")
+                    return
+                }
+                guard self.closed else {
+                    self.fail("Live speech worker stopped. Audio recording continues.")
+                    return
+                }
             } catch { if !Task.isCancelled { self?.fail(error.localizedDescription) } }
         }
         try await LocalModelProcess.waitForAvailable()
         try Task.checkCancellation()
         guard active, epoch == token else { throw CancellationError() }
         try LocalModelProcess.launch(child)
+        didLaunchBeforeWait?()
+        processWait = Task.detached { child.waitUntilExit() }
         for _ in 0..<120 {
-            try Task.checkCancellation(); guard active, child.isRunning else { throw VoiceProblem.message(issue ?? "The live speech model could not start") }
+            try requireCurrent(token); guard child.isRunning else { throw VoiceProblem.message(issue ?? "The live speech model could not start") }
             if ready { break }; try await Task.sleep(for: .milliseconds(200))
         }
+        try requireCurrent(token)
         guard ready else { cancel(); throw VoiceProblem.message("Live speech model took too long to load. Audio-only recording remains available.") }
     }
     private func startPump(provider: MeetingASRProvider) {
@@ -166,8 +236,16 @@ import ModuleCore
                         if let message = bridges[packet.track]?.error() { throw VoiceProblem.message(message) }
                     } else { try await write(packet) }
                 }
+                try Task.checkCancellation()
+                guard active, epoch == token else { throw CancellationError() }
                 if provider == .apple { bridges.values.forEach { $0.finish() } }
-                else { try await write(nil); try? input?.fileHandleForWriting.close() }
+                else {
+                    // Reserve before the awaited write: a valid worker may
+                    // respond before that original write Task resumes us.
+                    endInputEpoch = token
+                    try await write(nil)
+                    if let handle=input?.fileHandleForWriting,let closer=ioCloser{closer.close(handle,context:"live input EOF close")}
+                }
             } catch { if !Task.isCancelled { fail(error.localizedDescription) }; throw error }
         }
         if provider != .apple {
@@ -192,6 +270,8 @@ import ModuleCore
     private func receive(_ data: Data) throws {
         buffer.append(data); guard buffer.count <= 131072 else { throw VoiceProblem.message("Live speech output exceeded its limit") }
         while let end = buffer.firstIndex(of: 10) {
+            guard active else { return } // a callback may synchronously Stop
+            guard !closed else { throw VoiceProblem.message("Live speech returned output after closing. Saved audio is retained.") }
             let line = Data(buffer[..<end]); buffer.removeSubrange(...end)
             let message = try JSONDecoder().decode(WorkerMessage.self, from: line); lastReply = Date()
             switch message.type {
@@ -199,7 +279,11 @@ import ModuleCore
                 guard message.version == 2 else { throw VoiceProblem.message("The local speech helper needs to be updated with Nero Voice") }
                 ready = true
             case "ack": break
-            case "closed": closed = true
+            case "closed":
+                guard ready, endInputEpoch == epoch else {
+                    throw VoiceProblem.message("Live speech closed before its input ended. Saved audio is retained.")
+                }
+                closed = true
             case "committed":
                 guard let id = message.id, let through = message.through else { throw VoiceProblem.message("Incomplete speech boundary") }
                 // Complete inline, not in a resumed caller task: another line
@@ -256,6 +340,7 @@ import ModuleCore
                     guard !Task.isCancelled, let self, self.boundaries[id] != nil else { return }
                     self.fail("Speech could not finish this turn in time. Press Talk to reconnect.")
                 }
+                deadlines.retain(boundaries[id]?.deadline)
                 if !feed.boundary(id) { fail("Speech input closed before this turn could finish") }
             }
         } onCancel: { Task { @MainActor [weak self] in self?.cancelBoundary(id) } }
@@ -268,35 +353,99 @@ import ModuleCore
         continuation?.resume(throwing: CancellationError())
     }
     public func finish() async throws {
-        guard active else { throw VoiceProblem.message(issue ?? "Live transcription stopped; saved audio is retained") }
+        guard active,!finishing else { throw VoiceProblem.message(issue ?? "Live transcription stopped; saved audio is retained") }
+        finishing=true
+        let completed=AsyncStream<Void>.makeStream(bufferingPolicy:.bufferingNewest(1))
+        finishCompletion=Task{for await _ in completed.stream{}}
+        defer{finishing=false;completed.continuation.finish()}
         feed.finish()
         let deadline = Task { [weak self] in
             try? await Task.sleep(for: .seconds(15)); if !Task.isCancelled { self?.fail("Final live words timed out; saved audio is retained.") }
         }
+        deadlines.retain(deadline)
         defer { deadline.cancel() }
         try await pump?.value
         for analyzer in analyzers.values { try await analyzer.finalizeAndFinishThroughEndOfInput() }
         for result in results { try await result.value }
         if let process {
             while process.isRunning { try await Task.sleep(for: .milliseconds(50)); try Task.checkCancellation(); if let issue { throw VoiceProblem.message(issue) } }
-            // stdout callbacks may follow the process exit; wait for explicit close.
-            for _ in 0..<20 where !closed { try await Task.sleep(for: .milliseconds(25)) }
-            guard closed, process.terminationStatus == 0 else { throw VoiceProblem.message(issue ?? "Live speech could not finish; saved audio is retained") }
+            await processWait?.value
+            // Process exit can precede queued stdout. Join the original reader,
+            // including its framing/terminal checks, instead of guessing a delay.
+            await reader?.value
+            try Task.checkCancellation()
+            guard active, closed, endInputEpoch == epoch, buffer.isEmpty, process.terminationStatus == 0 else { throw VoiceProblem.message(issue ?? "Live speech could not finish; saved audio is retained") }
         }
         if let issue { throw VoiceProblem.message(issue) }; cancel()
     }
     private func fail(_ text: String) {
-        guard issue == nil, active else { return }; issue = String(text.prefix(350)); failure?(issue!); cancel()
+        guard issue == nil, active else { return }
+        issue = String(text.prefix(350))
+        // Publish retirement before the callback can reentrantly start a new
+        // recognizer. Missing presentation ownership is never physical cleanup.
+        cancel()
+        failure?(issue!)
     }
+    /// Completion of this cancelled service's original start, reader, pump,
+    /// results, analyzer cancellation and launched Foundation Process wait.
+    public func retirementCompletion() -> Task<Void, Never>? { retirement }
+    /// Captures the actual output consumer original without starting or
+    /// replacing work. Internal tests can join its real EOF/record processing.
+    func originalWorkerOutputCompletion() -> Task<Void, Never>? { reader }
+    public func cancelAndWait() async {
+        cancel()
+        await retirement?.value
+    }
+    /// Process-local capture: callers must retain this exact prior tail rather
+    /// than rereading a tail that might include their own subsequent retirement.
+    public static func pendingRetirementCompletion() -> Task<Void, Never>? { VoiceRecognitionRetirement.pending() }
+    private static func registerRetirement(_ original: Task<Void, Never>) { VoiceRecognitionRetirement.retain(original) }
     public func cancel() {
-        guard active else { return }; active = false; epoch = UUID(); feed.finish(); pump?.cancel(); watchdog?.cancel(); reader?.cancel()
-        let pending = boundaries; boundaries = [:]
-        for boundary in pending.values { boundary.deadline?.cancel(); boundary.continuation?.resume(throwing: CancellationError()) }
-        results.forEach { $0.cancel() }; bridges.values.forEach { $0.finish() }
-        for analyzer in analyzers.values { Task { await analyzer.cancelAndFinishNow() } }
-        analyzers = [:]; bridges = [:]
-        output?.fileHandleForReading.readabilityHandler = nil
-        if let process, process.isRunning { LocalModelProcess.stop(process) }
-        try? input?.fileHandleForWriting.close(); try? output?.fileHandleForReading.close()
+        guard active else{return}
+        active=false;epoch=UUID()
+        let originalStart=startCompletion,originalFinish=finishCompletion
+        // Already-installed native analyzers may be what start is awaiting.
+        // Request their real cancellation now, but snapshot late resources only
+        // after the original start returns (launch may synchronously reenter).
+        let installedAnalyzers=Array(analyzers.values)
+        let earlyIDs=Set(installedAnalyzers.map{ObjectIdentifier($0)})
+        let earlyAnalyzers=installedAnalyzers.map{analyzer in Task{await analyzer.cancelAndFinishNow()}}
+        let drain=Task{[self] in
+            await originalStart?.value
+            let originalPump=pump,originalReader=reader,originalWatchdog=watchdog
+            let originalResults=results,originalWait=processWait,originalInput=input,originalOutput=output
+            let originalPipeReader=outputReader,closer=ioCloser
+            originalPipeReader?.seal();originalPump?.cancel();originalReader?.cancel();originalWatchdog?.cancel()
+            let lateAnalyzers=analyzers.values.filter{!earlyIDs.contains(ObjectIdentifier($0))}.map{analyzer in Task{await analyzer.cancelAndFinishNow()}}
+            originalResults.forEach{$0.cancel()};bridges.values.forEach{$0.finish()}
+            requestTermination()
+            for cancellation in earlyAnalyzers{await cancellation.value}
+            for cancellation in lateAnalyzers{await cancellation.value}
+            _=try? await originalPump?.value
+            for result in originalResults{_=try? await result.value}
+            await originalReader?.value;await originalWatchdog?.value
+            await originalWait?.value
+            let timers=escalationTimers;timers.forEach{$0.cancel()};for timer in timers{await timer.value}
+            await originalFinish?.value
+            await deadlines.completion()?.value
+            await originalPipeReader?.retire().value
+            await Task.detached{
+                if let originalInput{
+                    closer?.close(originalInput.fileHandleForWriting,context:"live stdin writer close")
+                    if originalWait == nil{closer?.close(originalInput.fileHandleForReading,context:"unlaunched live stdin reader close")}
+                }
+                if let originalOutput{
+                    closer?.close(originalOutput.fileHandleForReading,context:"live stdout reader close")
+                    if originalWait == nil{closer?.close(originalOutput.fileHandleForWriting,context:"unlaunched live stdout writer close")}
+                }
+            }.value
+            analyzers=[:];bridges=[:]
+        }
+        retirement=drain;Self.registerRetirement(drain)
+        outputReader?.seal();feed.finish();pump?.cancel();reader?.cancel();watchdog?.cancel()
+        results.forEach{$0.cancel()};bridges.values.forEach{$0.finish()}
+        let pending=boundaries;boundaries=[:]
+        for boundary in pending.values{boundary.deadline?.cancel();boundary.continuation?.resume(throwing:CancellationError())}
+        requestTermination()
     }
 }

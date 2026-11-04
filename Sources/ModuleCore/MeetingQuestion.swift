@@ -31,8 +31,17 @@ public struct MeetingQuestionSnapshot: Sendable {
         return Set(text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
             .split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init).filter { $0.count > 2 && !stop.contains($0) })
     }
+    /// Only a deliberately kept version extends source identity; old citations stay exact.
+    public static func sourceFingerprint(_ line:MeetingUtterance,transcript:MeetingTranscript) -> String {
+        let original=fingerprint(line,names:transcript.names)
+        guard transcript.isKeptRecognitionAlternative(line.id) else{return original}
+        let encoder=JSONEncoder();encoder.outputFormatting=[.sortedKeys]
+        let origin=(try? encoder.encode(transcript.transcriptionReview?.origins[line.id.uuidString])) ?? Data()
+        let comparison=(try? encoder.encode(transcript.transcriptionReview?.keptProtectedFingerprints?[line.id.uuidString])) ?? Data()
+        return hash(original+"|kept-recognition-version|"+String(decoding:origin,as:UTF8.self)+String(decoding:comparison,as:UTF8.self))
+    }
     public static func prepare(meetingID: UUID, transcript: MeetingTranscript, provider: MeetingASRProvider, live: Bool, question: String) throws -> Self {
-        try transcript.validate()
+        try transcript.validate();try transcript.requireResolvedTranscription()
         let text = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, text.utf8.count <= 1024 else { throw VoiceProblem.message("Ask a question of up to 1 KB.") }
         let lines = transcript.utterances.filter { !($0.correction ?? $0.text).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -81,9 +90,12 @@ public struct MeetingQuestionSnapshot: Sendable {
             var shortSpeaker = speaker
             while shortSpeaker.utf8.count > 80 { shortSpeaker.removeLast() }
             let clock = String(format: "%02d:%02d:%02d", Int(line.start) / 3600, Int(line.start) / 60 % 60, Int(line.start) % 60)
-            let label = clock + " · " + shortSpeaker + (piece.fragment ? " · excerpt" : "")
+            let alternative=transcript.isKeptRecognitionAlternative(line.id) ? "Recognition version; may overlap · " : ""
+            let suffix=piece.fragment ? " · excerpt" : ""
+            while shortSpeaker.utf8.count>max(0,120-alternative.utf8.count-clock.utf8.count-3-suffix.utf8.count){shortSpeaker.removeLast()}
+            let label = alternative + clock + " · " + shortSpeaker + suffix
             sources.append(.init(evidence: .init(id: "s\(i + 1)", label: label, text: piece.text), utteranceID: line.id,
-                start: line.start, end: line.end, fingerprint: fingerprint(line, names: transcript.names), fragment: piece.fragment))
+                start: line.start, end: line.end, fingerprint: sourceFingerprint(line,transcript:transcript), fragment: piece.fragment))
         }
         let unique = Set(sources.map(\.utteranceID)).count
         let full = unique == lines.count && sources.reduce(0) { $0 + $1.evidence.text.utf8.count } == lines.reduce(0) { $0 + ($1.correction ?? $1.text).utf8.count }
@@ -95,7 +107,7 @@ public struct MeetingQuestionSnapshot: Sendable {
     public func resolve(_ citation: String, meetingID: UUID, transcript: MeetingTranscript) throws -> MeetingUtterance {
         guard meetingID == self.meetingID, let source = sources.first(where: { $0.evidence.id == citation }),
               let line = transcript.utterances.first(where: { $0.id == source.utteranceID }),
-              Self.fingerprint(line, names: transcript.names) == source.fingerprint
+              Self.sourceFingerprint(line,transcript:transcript) == source.fingerprint
         else { throw VoiceProblem.message("This source was changed or removed. Ask again using the current transcript.") }
         return line
     }

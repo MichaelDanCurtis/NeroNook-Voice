@@ -6,10 +6,32 @@ import ModuleCore
 import VoiceAudio
 import NookPluginSDK
 
+@MainActor final class VoicePresentationReturns {
+    private var original:Task<Bool,Never>?
+    private var waiting:[CheckedContinuation<Task<Bool,Never>,Never>]=[]
+    func install(_ task:Task<Bool,Never>){
+        guard original == nil else{return};original=task
+        let captured=waiting;waiting.removeAll();for waiter in captured{waiter.resume(returning:task)}
+    }
+    func result()async->Bool{
+        let captured:Task<Bool,Never>
+        if let original{captured=original}else{captured=await withCheckedContinuation{waiting.append($0)}}
+        return await captured.value
+    }
+}
+
 @MainActor final class VoicePlugin: ObservableObject {
-    let model = VoiceModel()
-    let meetings = MeetingModel()
-    let conversation = ConversationProvider()
+    let configuration:VoiceProductConfiguration
+    var hasAmbientProductObservers:Bool{timer != nil || qwenCloseObserver != nil || activity != nil}
+    let model: VoiceModel
+    let meetings: MeetingModel
+    let conversation: ConversationProvider
+    let sharedService: Bool
+    var sharedBus: ((PluginBusMessage) -> Bool)?
+    var sharedFailure: (() -> Void)?
+    var sharedAdmission: ((PluginMessage) throws -> Void)?
+    var sharedProviderCapture: ((UUID, VoiceProviderSource)->VoiceOwnedProviderRequest?)?
+    var sharedPrivateActivity = false
     private var conversationStreaming = false
     @Published var page = "Dictate"
     private var customViews = false
@@ -17,23 +39,39 @@ import NookPluginSDK
     private var lastCaptionAt = Date.distantPast
     private var lastMeterSnapshotAt = Date.distantPast
     let id = "cafe.nero.plugin.voice"
-    let hosted = CommandLine.arguments.contains("--neronook-plugin")
+    let hosted: Bool
     let test = CommandLine.arguments.contains("--protocol-test")
-    private let windows = PluginWindows()
-    private let channel = PluginApplicationChannel()
+    private let windows:PluginWindows
+    let presentationAppearanceStore:PluginAppearanceStore?
+    private var originalPresentationRetirement:Task<Bool,Never>?
+    private let channel: PluginApplicationChannel?
     private lazy var output = VoiceOutput(pluginID: id, channel: channel, test: test)
     private var session: UUID?
     private var shuttingDown = false
     private var lines = PluginLines()
     private var accumulator = PluginCatalogAccumulator()
-    private var meetingReads: [UUID: Task<Void, Never>] = [:]
+    private let meetingReads = VoiceMeetingReadOwner()
     private var spokenRequest: UUID?
     private var speechMeter:Task<Void,Never>?
     private var seen = Set<UUID>()
     private var timer: Timer?
     private var qwenCloseObserver: NSObjectProtocol?
     private var activity: NSObjectProtocol?
-    init() {
+    private let controlAdmission=VoiceAudioCallbackAdmission()
+    private var originalControlShutdown:Task<Void,Never>?
+    init(sharedService: Bool = false, permitsGlobalControls: Bool = true, configuration suppliedConfiguration:VoiceProductConfiguration? = nil) {
+        let configuration = suppliedConfiguration ?? .legacy
+        self.configuration=configuration
+        self.sharedService = sharedService
+        let appearanceStore=sharedService ? configuration.appearance.store:nil
+        presentationAppearanceStore=appearanceStore
+        windows=appearanceStore.map{PluginWindows(appearanceStore:$0)} ?? PluginWindows()
+        let presentationAllowed:@MainActor ()->Bool = sharedService ? {configuration.appearance.isPresentationAllowed}:{true}
+        hosted = sharedService || CommandLine.arguments.contains("--neronook-plugin")
+        channel = sharedService ? nil : PluginApplicationChannel()
+        model = VoiceModel(permitsGlobalControls: permitsGlobalControls,configuration:configuration,appearanceStore:appearanceStore,presentationAllowed:presentationAllowed)
+        meetings = MeetingModel(configuration:configuration,appearanceStore:appearanceStore,presentationAllowed:presentationAllowed)
+        conversation = ConversationProvider(configuration:configuration)
         if Bundle.main.object(forInfoDictionaryKey: "NeroLiveFixtureAudio") != nil {
             page = "Meetings"
         }
@@ -60,31 +98,46 @@ import NookPluginSDK
             }
         }
         meetings.changed = { [weak self] in self?.publish() }
-        meetings.canStart = { [weak self] in guard let self else { return false }; return !self.model.rewrite.active && !self.conversation.active && !self.model.session.recording && !self.model.waiting && !self.model.preparingAssets && !self.model.inserting && !self.model.polishing && !self.model.speaking }
+        meetings.canStart = { [weak self] in guard let self else { return false }; return !self.model.localBusy && !self.conversation.busy && !self.model.speaking }
+        if sharedService {
+            model.captureProviderRequest = { [weak self] request in
+                self?.sharedProviderCapture?(request, .dictation)
+            }
+            meetings.captureProviderRequest = { [weak self] request in
+                self?.sharedProviderCapture?(request, .meeting)
+            }
+        }
         meetings.microphone = { [weak self] in self?.model.microphone ?? "" }
         meetings.locale = { [weak self] in self?.model.locale ?? "en-US" }
-        if !test { meetings.startCallDetection() }
+        if !test && permitsGlobalControls && configuration.allows(.observation) { meetings.startCallDetection() }
         model.meetingActive = { [weak self] in
             guard let self else { return false }
-            return self.conversation.active || self.meetings.occupied || self.meetings.playing
+            return self.conversation.busy || self.meetings.occupied || self.meetings.playing
         }
         model.stopMeetingPlayback = { [weak self] in self?.meetings.stopPlayback() }
+        let admission=controlAdmission
+        if configuration.allows(.observation){
         qwenCloseObserver = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { [weak self] note in
-            guard let window = note.object as? NSWindow, window.title == "Qwen Voice Studio" else { return }; Task { @MainActor in self?.model.cancelReference() }
+            guard let entered=admission.enter() else{return}
+            guard let window=note.object as? NSWindow,window.title == "Qwen Voice Studio" else{entered.finish();return}
+            Task { @MainActor in defer{entered.finish()};self?.model.cancelReference() }
+        }
         }
         model.showQwenStudio = { [weak self] in self?.showQwenWindow() }
         model.reveal = { [weak self] in self?.showWindow() }
         if hosted {
-            NSApplication.shared.setActivationPolicy(.accessory)
-            activity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "Serve Nero Voice")
-            if let channel {
+            if configuration.allows(.observation){
+                NSApplication.shared.setActivationPolicy(.accessory)
+                activity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "Serve Nero Voice")
+            }
+            if !sharedService, let channel {
                 channel.start { [weak self] message in Task { @MainActor in guard let self else { return }; guard let message else { self.shutdown(); exit(0) }; self.receive(message) } }
-            } else if test {
+            } else if !sharedService && test {
                 FileHandle.standardInput.readabilityHandler = { [weak self] input in
                     let data = input.availableData
                     Task { @MainActor in guard let self else { return }; guard !data.isEmpty else { self.shutdown(); exit(0) }; do { for message in try self.lines.append(data) { self.receive(message) } } catch { self.shutdown(); exit(1) } }
                 }
-            } else { model.status = "Launch this module through NeroNook 0.14 or newer" }
+            } else if !sharedService { model.status = "Launch this module through NeroNook 0.14 or newer" }
             model.invoke = { [weak self] request, address, values in self?.bus(.init(.invoke, requestID: request, address: address, values: values)) }
             meetings.invokeCalendar = { [weak self] request, address, values in self?.bus(.init(.invoke, requestID: request, address: address, values: values)) }
             meetings.cancelCalendarInvocation = { [weak self] request in self?.bus(.init(.cancel, requestID: request)) }
@@ -92,12 +145,17 @@ import NookPluginSDK
             meetings.cancelQuestionInvocation = { [weak self] request in self?.bus(.init(.cancel, requestID: request)) }
             model.cancelInvocation = { [weak self] request in self?.bus(.init(.cancel, requestID: request)) }
         }
-        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in Task { @MainActor in self?.model.refreshSpeechState(); self?.meetings.tick(); self?.publish() } }; self.timer = timer; RunLoop.main.add(timer, forMode: .common)
+        if configuration.allows(.observation){
+        let timer=Timer(timeInterval:1,repeats:true){[weak self] _ in
+            guard let entered=admission.enter() else{return}
+            Task{@MainActor in defer{entered.finish()};self?.model.refreshSpeechState();self?.meetings.tick();self?.publish()}
+        };self.timer=timer;RunLoop.main.add(timer,forMode:.common)
+        }
     }
-    private func shutdown() {
+    func shutdown() {
         guard !shuttingDown else { return }
         shuttingDown = true
-        for task in meetingReads.values { task.cancel() }; meetingReads = [:]
+        meetingReads.cancelAll()
         session = nil
         model.changed = nil; model.captionChanged = nil
         meetings.changed = nil
@@ -107,12 +165,92 @@ import NookPluginSDK
         conversation.stop(); meetings.shutdown()
         model.shutdown()
     }
-    func showQwenWindow() { model.qwenProfiles = (try? QwenVoiceLibrary().list()) ?? []; windows.show("qwen", title: "Qwen Voice Studio", size: CGSize(width: 850, height: 720)) { QwenStudio(model: model) } }
-    func showWindow() { windows.show("voice", title: "Nero Voice", size: CGSize(width: 820, height: 550)) { VoiceRootView(plugin: self) } }
+    func beginSharedSession(_ context: VoiceClientContext) throws {
+        guard sharedService, session == nil else { throw VoiceServiceProblem.busy }
+        shuttingDown = false
+        seen.removeAll(); accumulator = PluginCatalogAccumulator()
+        customViews = false; conversationStreaming = false
+        lastCaption = nil; lastCaptionAt = .distantPast
+        output=VoiceOutput(pluginID:id,channel:nil,test:false,sharedSink:{message in try context.queueModule(message)})
+    }
+    func receiveShared(_ message: PluginMessage) throws {
+        guard sharedService, !shuttingDown, message.pluginID == id else { throw VoiceServiceProblem.protocolViolation }
+        if let session { guard message.session == session else { throw VoiceServiceProblem.protocolViolation } }
+        else { guard message.type == "hello", message.features?.contains("forms-v1") == true else { throw VoiceServiceProblem.protocolViolation } }
+        try configuration.validateData()
+        try sharedAdmission?(message)
+        receive(message)
+    }
+    func endSharedSession() async {
+        guard sharedService else { return }
+        let originalOutput = output, originalSession=session
+        if let originalSession{_ = configuration.appearance.endSession(pluginID:id,session:originalSession)}
+        originalOutput.stop()
+        session = nil
+        await originalOutput.retirement()
+        accumulator = PluginCatalogAccumulator(); seen.removeAll()
+        model.updateCatalog([]); meetings.questionCatalog([]); meetings.calendarCatalog([])
+    }
+    func sharedSpeech(_ request: UUID, action: String, values: [String: PluginValue]) throws {
+        guard sharedService else { throw VoiceServiceProblem.unavailable }
+        if action == PluginSpeechConversation.action.id {
+            try conversation.start(request, values: values, preferences: model,
+                                   available: !model.busy && !model.speaking && !meetings.occupied)
+        } else if action == PluginSpeechContract.speak.id {
+            let text = try PluginSpeechContract.validate(values)
+            try model.speakShared(text); spokenRequest = request
+            bus(.init(.update, requestID: request, update: .init(.running, message: "Preparing local speech")))
+        } else { throw VoiceServiceProblem.unavailable }
+    }
+    func sharedInput(_ message: PluginBusMessage) throws { try conversation.receive(message) }
+    func cancelShared(_ request: UUID) {
+        conversation.cancel(request); meetingReads.cancel(request)
+        if spokenRequest == request { model.stopSpeaking() }
+    }
+    // Captures the actual task owners before cancellation; native/framework
+    // families without a truthful release result remain unknown in the registry.
+    func retireSharedRequests(_ requests: Set<UUID>) async {
+        for request in requests { cancelShared(request) }
+        await retireMeetingReads(requests)
+        await conversation.sharedRetirement()
+    }
+    // File-only owner: never waits or cancels a conversation, output or model.
+    func retireMeetingReads(_ requests: Set<UUID>) async { await meetingReads.retire(requests) }
+    func sealPresentationForRetirement()->Task<Bool,Never>{
+        // This closes the cross-surface gate BEFORE any native/store callout.
+        let appearanceOriginal=configuration.appearance.sealForRetirement()
+        if let originalPresentationRetirement{return originalPresentationRetirement}
+        // Reserve the exact single-flight task before any child native close.
+        let returns=VoicePresentationReturns()
+        let original=Task {await returns.result()}
+        originalPresentationRetirement=original
+        let modelOriginal=model.sealPresentationForRetirement()
+        let meetingOriginal=meetings.sealPresentationForRetirement()
+        let windowsAccepted=windows.sealForRetirement()
+        returns.install(Task {let a=await appearanceOriginal.value;let b=await modelOriginal.value;let c=await meetingOriginal.value;let d=await windows.retirement();return a && b && c && d && windowsAccepted})
+        return original
+    }
+    func presentationRetirement()async->Bool{await sealPresentationForRetirement().value}
+    func shutdownControls() async {
+        if let originalControlShutdown{await originalControlShutdown.value;return}
+        let admission=controlAdmission
+        admission.seal()
+        let modelOriginal=model.shutdownControlCallbacks(), originalOutput=output
+        let original=Task {await modelOriginal.value;await originalOutput.retirement();await admission.waitForReturn()}
+        originalControlShutdown=original
+        timer?.invalidate();timer=nil
+        if let qwenCloseObserver{NotificationCenter.default.removeObserver(qwenCloseObserver)};qwenCloseObserver=nil
+        windows.closeAll()
+        admission.nativeStopReturned()
+        await original.value
+    }
+    func showQwenWindow() { guard configuration.appearance.isPresentationAllowed,configuration.admit(.nativePresentation),configuration.permitsData()else{model.status=configuration.reason;return};model.qwenProfiles = (try? configuration.qwenLibrary.list()) ?? []; windows.show("qwen", title: "Qwen Voice Studio", size: CGSize(width: 850, height: 720)) { QwenStudio(model: model) } }
+    func showWindow() { guard configuration.appearance.isPresentationAllowed,configuration.admit(.nativePresentation)else{model.status=configuration.reason;return};windows.show("voice", title: "Nero Voice", size: CGSize(width: 820, height: 550)) { VoiceRootView(plugin: self) } }
     func showMicrophoneWindow() {
+        guard configuration.appearance.isPresentationAllowed,configuration.admit(.nativePresentation)else{model.status=configuration.reason;return}
         model.refreshDevices()
         windows.show("microphone", title: "Microphone & Voice · Nero Voice", size: CGSize(width: 500, height: 440)) {
-            MicrophoneChoiceView(model: self.model, settings: { self.showWindow(); self.model.settings = true })
+            MicrophoneChoiceView(model:self.model,settings:{guard self.configuration.appearance.isPresentationAllowed else{return};self.showWindow();self.model.settings=true},appearanceStore:self.presentationAppearanceStore)
         }
     }
     private func receive(_ m: PluginMessage) {
@@ -123,12 +261,14 @@ import NookPluginSDK
             customViews = m.features?.contains("custom-views-v1") == true
             model.hostCaptionAvailable = m.features?.contains("transient-caption-v1") == true
             model.enhancedCaptionAvailable = m.features?.contains("transient-caption-v2") == true
-            session = m.session; output.begin(m.session); PluginAppearanceStore.shared.beginSession(pluginID:id,session:m.session)
+            session = m.session; output.begin(m.session)
+            if sharedService || configuration.isolated{configuration.appearance.beginSession(pluginID:id,session:m.session)}
+            else{PluginAppearanceStore.shared.beginSession(pluginID:id,session:m.session)}
             emit("ready", features: ["appearance-v1", "panels-v1", "dashboard-v1", "forms-v1", "actions-v1"] + (conversationStreaming ? ["action-stream-v1", "actions-long-running-v1"] : []) + (customViews ? ["custom-views-v1"] : []) + (model.hostCaptionAvailable ? ["transient-caption-v1"] : []) + (model.enhancedCaptionAvailable ? ["transient-caption-v2"] : []))
             bus(.init(.register, registration: .init(actions: [VoiceContract.submit, PluginSpeechContract.speak, MeetingReadContract.search, MeetingReadContract.read] + (conversationStreaming ? [PluginSpeechConversation.action] : [])))); bus(.init(.discover)); publish(); return
         }
         guard m.session == session else { shutdown(); exit(1) }
-        if m.type == "appearance" { _ = PluginAppearanceStore.shared.receive(m); return }
+        if m.type == "appearance" { if sharedService || configuration.isolated{configuration.appearance.receive(m)}else{_ = PluginAppearanceStore.shared.receive(m)};return }
         if m.type == "viewEvent", let event = m.viewEvent {
             do { if event.panelID == "voice" { try model.handleVoice(event) } else { try meetings.handle(event) } } catch { model.status = error.localizedDescription }; publish(); return
         }
@@ -167,15 +307,20 @@ import NookPluginSDK
                         return
                     }
                     if let address = bus.address, address.plugin == id, [MeetingReadContract.search.id, MeetingReadContract.read.id].contains(address.name), let values = bus.values, !test {
-                        guard meetingReads.count < 4 else { throw VoiceProblem.message("Too many meeting reads") }
-                        meetingReads[bus.requestID] = Task { [weak self] in
-                            guard let self else { return }; defer { self.meetingReads[bus.requestID] = nil }
-                            do { let values = try await self.meetings.readTool(address.name, values: values); try Task.checkCancellation(); self.bus(.init(.update, requestID: bus.requestID, update: .init(.succeeded, message: "Saved local meeting text", values: values))) }
-                            catch { self.bus(.init(.update, requestID: bus.requestID, update: .init(error is CancellationError ? .cancelled : .failed, message: String(error.localizedDescription.prefix(280))))) }
-                        }; return
+                        let meetings = self.meetings, request = bus.requestID
+                        try meetingReads.start(request, operation: {
+                            try await meetings.readTool(address.name, values: values)
+                        }, reply: { [weak self] result in
+                            switch result {
+                            case .success(let values):
+                                self?.bus(.init(.update, requestID: request, update: .init(.succeeded, message: "Saved local meeting text", values: values)))
+                            case .failure(let error):
+                                self?.bus(.init(.update, requestID: request, update: .init(error is CancellationError ? .cancelled : .failed, message: String(error.localizedDescription.prefix(280)))))
+                            }
+                        }); return
                     }
                     if bus.address == PluginActionAddress(id, PluginSpeechContract.speak.id), let values = bus.values {
-                        guard !conversation.active else { throw VoiceProblem.message("Finish the voice conversation before reading other text.") }
+                        guard !conversation.busy else { throw VoiceProblem.message("Finish the voice conversation before reading other text.") }
                         let text = try PluginSpeechContract.validate(values)
                         // Attach ownership after the renderer's synchronous stop/start,
                         // so its previous session cannot finish this new request.
@@ -198,7 +343,7 @@ import NookPluginSDK
                 } catch { self.bus(.init(.update, requestID: bus.requestID, update: .init(.failed, message: String(error.localizedDescription.prefix(450))))) }
             case .cancel:
                 conversation.cancel(bus.requestID)
-                meetingReads[bus.requestID]?.cancel()
+                meetingReads.cancel(bus.requestID)
                 if spokenRequest == bus.requestID { model.stopSpeaking() }
             case .update: if let update = bus.update { model.receive(bus.requestID, update: update); meetings.receiveQuestion(bus.requestID, update: update); meetings.receiveCalendar(bus.requestID, update: update) }
             case .failure: conversation.cancel(bus.requestID); model.receive(bus.requestID, update: .init(.failed, message: bus.error ?? "Assistant unavailable")); meetings.receiveQuestion(bus.requestID, update: .init(.failed, message: bus.error ?? "Assistant unavailable")); meetings.receiveCalendar(bus.requestID, update: .init(.failed, message: bus.error ?? "Calendar unavailable"))
@@ -210,6 +355,12 @@ import NookPluginSDK
     private func publish() {
         guard !shuttingDown, session != nil else { return }
         output.noteMainProgress()
+        if sharedPrivateActivity {
+            var snapshot = PluginSnapshot(title: "Nero Voice", status: "Voice is in use by another approved client")
+            snapshot.avatarInteractionBusy = true
+            emit("snapshot", snapshot: snapshot)
+            return
+        }
         var sections: [PluginSection] = []
         if model.session.recording {
             sections = [.init(model.session.phase == .listening ? "Listening on your Mac" : "Preparing / finishing", model.session.transcript.isEmpty ? "Your words appear here. Nothing is sent automatically." : String(model.session.transcript.prefix(1200)))]
@@ -219,9 +370,9 @@ import NookPluginSDK
             .init("text", label: "Your words", style: .text, value: .string(model.session.transcript)),
             .init("destination", label: "Use text", style: .choice, value: .string("Copy"), choices: ["Copy"]),
             .init("read_reply", label: "Read reply aloud", style: .toggle, value: .boolean(false))
-        ], enabled: !model.busy)
+        ], enabled: !model.busy && configuration.allows(.accessibility))
         let actions: [PluginAction] = [
-            .init("record", model.session.recording ? "Stop dictation" : "Record dictation", enabled: !meetings.occupied && !model.waiting && !model.preparingAssets && model.session.phase != .finishing, symbol: model.session.recording ? "stop.fill" : "mic.fill"),
+            .init("record", model.session.recording ? "Stop dictation" : "Record dictation", enabled: configuration.allows(.capture) && !meetings.occupied && !model.waiting && !model.preparingAssets && model.session.phase != .finishing, symbol: model.session.recording ? "stop.fill" : "mic.fill"),
             .init("cancel", "Cancel", enabled: model.busy || model.speaking, symbol: "xmark"),
             .init("clear", "Clear", enabled: !model.busy, symbol: "trash")
         ]
@@ -232,14 +383,14 @@ import NookPluginSDK
             customViews ? .init("voice", "Dictate", customView: model.voiceDefinition) : .init("voice", "Dictate", sections: sections, forms: model.session.recording ? nil : [form]),
             customViews ? .init("meetings", "Meetings", customView: meetings.definition) : .init("meetings", "Meetings", sections: [.init("Meeting recordings", "Open Nero Voice for meeting recording, bookmarks and playback.")])
         ])
-        snapshot.avatarInteractionBusy = model.busy || (model.speaking && model.avatarPlayback == nil) || conversation.active || meetings.occupied || meetings.playing
+        snapshot.avatarInteractionBusy = model.busy || (model.speaking && model.avatarPlayback == nil) || conversation.busy || meetings.occupied || meetings.playing
         do { try snapshot.validate(); emit("snapshot", snapshot: snapshot) }
         catch { emit("snapshot", snapshot: PluginSnapshot(title: "Nero Voice", status: "Voice view unavailable. Open settings or stop the current activity.", actions: [.init("cancel", "Stop activity", enabled: true, symbol: "stop.fill")], sections: [.init("Display issue", String(error.localizedDescription.prefix(200)))])) }
         publishCaption()
     }
     private func publishCaption() {
         guard !shuttingDown, session != nil else { return }
-        if model.hostCaptionAvailable {
+        if !sharedPrivateActivity && model.hostCaptionAvailable {
             let current = model.transientCaption
             if current != lastCaption || (current?.phase == .active && Date().timeIntervalSince(lastCaptionAt) >= 2) {
                 emit("caption", caption: current ?? PluginTransientCaption(.dismiss))
@@ -247,11 +398,17 @@ import NookPluginSDK
             }
         }
     }
-    private func bus(_ value: PluginBusMessage) { emit("bus", bus: value) }
+    func makeProviderRequest(_ request:UUID,session expected:UUID,onRetire:@escaping @MainActor ()->Void)->VoiceOwnedProviderRequest?{
+        guard sharedService,!shuttingDown,session==expected else{return nil}
+        return VoiceOwnedProviderRequest(requestID:request,session:expected,output:output,onRetire:onRetire)
+    }
+    func emitSharedHeartbeat(){emit("heartbeat")}
+    func emitSharedBus(_ value: PluginBusMessage) { emit("bus", bus: value) }
+    private func bus(_ value: PluginBusMessage) { if sharedBus?(value) == true { return }; emit("bus", bus: value) }
     private func emit(_ type: String, features: [String]? = nil, snapshot: PluginSnapshot? = nil, bus: PluginBusMessage? = nil, caption: PluginTransientCaption? = nil) {
         guard !shuttingDown, session != nil else { return }
         do { try output.emit(type, features: features, snapshot: snapshot, bus: bus, caption: caption) }
-        catch { shutdown(); exit(1) }
+        catch { if sharedService { sharedFailure?() } else { shutdown(); exit(1) } }
     }
 }
 
@@ -259,6 +416,7 @@ struct VoiceView: View {
     @ObservedObject var model: VoiceModel
     var body: some View {
         PluginWebSurface(root: Bundle.main.resourceURL!.appendingPathComponent("Views"), panelID: "voice", definition: model.voiceDefinition) { event in
+            guard let entered=model.enterControlCallback() else{return};defer{entered.finish()}
             do { try model.handleVoice(event) } catch { model.status = error.localizedDescription }
         }.frame(width: 820, height: 510).onExitCommand { model.cancel() }
     }
@@ -266,6 +424,7 @@ struct VoiceView: View {
 struct MicrophoneChoiceView: View {
     @ObservedObject var model: VoiceModel
     var settings: () -> Void
+    var appearanceStore:PluginAppearanceStore? = nil
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Microphone & voice").font(.title2.weight(.medium))
@@ -280,7 +439,7 @@ struct MicrophoneChoiceView: View {
             InterruptionSensitivityView(value: $model.interruptionSensitivity)
             HStack { Button("Refresh devices") { model.refreshDevices() }; Spacer(); Button("All voice settings…", action: settings) }
             Text("Changing input never starts recording. Start Talk again when you’re ready.").font(.caption).pluginSecondaryText()
-        }.padding(26).frame(width: 500, height: 440).pluginThemed()
+        }.padding(26).frame(width:500,height:440).pluginThemed(store:appearanceStore ?? .shared)
     }
 }
 struct VoiceSettings: View {
@@ -395,7 +554,58 @@ struct VoiceSettings: View {
     }
 }
 @main struct NeroVoiceApp: App {
-    @StateObject private var plugin: VoicePlugin
-    init() { _plugin = StateObject(wrappedValue: VoicePlugin()) }
-    var body: some Scene { WindowGroup(plugin.hosted ? "Nero Voice Launcher" : "Nero Voice") { VoiceRootView(plugin: plugin).pluginThemed().onAppear { if plugin.hosted { NSApp.windows.first { $0.title == "Nero Voice Launcher" }?.orderOut(nil) } } }.windowResizability(.contentSize) }
+    @StateObject private var bootstrap: VoiceServiceBootstrap
+    @StateObject private var isolatedAppearance=VoiceProductAppearance()
+    @NSApplicationDelegateAdaptor(VoiceServiceAppDelegate.self) private var delegate
+    init() {
+        #if NERO_VOICE_ISOLATED_NATIVE074
+        _bootstrap = StateObject(wrappedValue: VoiceNativeEntry074.makeBootstrap())
+        #else
+        _bootstrap = StateObject(wrappedValue: VoiceServiceBootstrap())
+        #endif
+    }
+    var body: some Scene {
+        WindowGroup("Nero Voice") {
+            VoiceProductSurface(isolated:bootstrap.usesPlaceholderAppearance,appearance:bootstrap.runtime?.plugin.configuration.appearance ?? isolatedAppearance){
+            Group {
+                if let plugin = bootstrap.legacy ?? bootstrap.runtime?.plugin { VoiceRootView(plugin: plugin) }
+                else { VoiceNormalSetupView(bootstrap: bootstrap) }
+            }
+            }.onAppear { delegate.bootstrap = bootstrap }
+        }.windowResizability(.contentSize)
+    }
+}
+
+/// An original local provider channel snapshot, not a remote completion receipt.
+/// No later lookup can reroute this request/cancel onto a replacement Nook.
+enum VoiceProviderSource: Equatable, Sendable { case meeting, dictation }
+
+@MainActor final class VoiceOwnedProviderRequest {
+    let requestID:UUID
+    let session:UUID
+    private let output:VoiceOutput
+    private let onRetire:@MainActor ()->Void
+    private var originalRetirement:Task<Void,Never>?
+    init(requestID:UUID,session:UUID,output:VoiceOutput,onRetire:@escaping @MainActor ()->Void = {}){
+        self.requestID=requestID;self.session=session;self.output=output;self.onRetire=onRetire
+    }
+    func invoke(address:PluginActionAddress,values:[String:PluginValue])throws{
+        guard originalRetirement==nil else{throw VoiceServiceProblem.staleContext}
+        try output.emit("bus",bus:.init(.invoke,requestID:requestID,address:address,values:values))
+    }
+    func cancel()throws{
+        guard originalRetirement==nil else{throw VoiceServiceProblem.staleContext}
+        try output.emit("bus",bus:.init(.cancel,requestID:requestID))
+    }
+    func writeBarrier()->Task<Void,Never>{output.writeBarrier()}
+    var writeIssue:String?{output.writeIssue}
+    /// Caller closes its exact local callback admission and joins its original
+    /// request task first. This final barrier releases only that reservation.
+    func retire()async{
+        if let originalRetirement{await originalRetirement.value;return}
+        let barrier=output.writeBarrier(),returned=onRetire
+        let original=Task{await barrier.value;returned()}
+        originalRetirement=original
+        await original.value
+    }
 }

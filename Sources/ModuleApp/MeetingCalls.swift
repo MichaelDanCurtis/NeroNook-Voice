@@ -3,11 +3,42 @@ import Foundation
 import ModuleCore
 import VoiceAudio
 
+// The visible slot can be cleared immediately, but the original sampler is
+// retained until its actual detached/native observation call has returned.
+@MainActor final class MeetingCallDetectionOwner {
+    private(set) var current: Task<Void, Never>?
+    private(set) var sealed = false
+    private var originals: [UUID: Task<Void, Never>] = [:]
+    func install(_ task: Task<Void, Never>) -> Bool {
+        guard !sealed, current == nil else {
+            let id = UUID(); originals[id] = task; task.cancel()
+            Task { @MainActor [weak self] in await task.value; self?.originals[id] = nil }
+            return false
+        }
+        current = task; return true
+    }
+    func stop() {
+        let original = current; current = nil
+        guard let original else { return }
+        let id = UUID(); originals[id] = original; original.cancel()
+        Task { @MainActor [weak self] in await original.value; self?.originals[id] = nil }
+    }
+    func seal() { sealed = true; stop() }
+    func waitForReturn() async {
+        while !originals.isEmpty {
+            let captured = Array(originals.values)
+            for original in captured { await original.value }
+            await Task.yield()
+        }
+    }
+}
+
 extension MeetingModel {
     func startCallDetection() {
-        guard !CommandLine.arguments.contains("--protocol-test"), Bundle.main.object(forInfoDictionaryKey: "NeroLiveFixtureAudio") == nil,
-              callOffersEnabled, !callDetectionSuspended, callDetectionTask == nil else { return }
-        callDetectionTask = Task { [weak self] in
+        guard allowProductEffect(.observation) else{return}
+        guard !nativeClosing, !CommandLine.arguments.contains("--protocol-test"), Bundle.main.object(forInfoDictionaryKey: "NeroLiveFixtureAudio") == nil,
+              callOffersEnabled, !callDetectionSuspended, !callDetectionOwner.sealed, callDetectionOwner.current == nil else { return }
+        let original = Task { [weak self] in
             while !Task.isCancelled {
                 let signal = await MeetingCallObservation.sample()
                 guard !Task.isCancelled, let self, self.callOffersEnabled, !self.callDetectionSuspended else { return }
@@ -15,12 +46,15 @@ extension MeetingModel {
                 try? await Task.sleep(for: .seconds(2))
             }
         }
+        _ = callDetectionOwner.install(original)
     }
     func stopCallDetection() {
-        callDetectionTask?.cancel(); callDetectionTask = nil
+        callDetectionOwner.stop()
         callState.reset(); callOffer = nil; callPanel.hide()
     }
     func receiveCallObservation(_ signal: MeetingCallSignal?) {
+        guard allowProductEffect(.observation) else{return}
+        guard !nativeClosing else { return }
         let now = ProcessInfo.processInfo.systemUptime
         let offer = callState.observe(signal, at: now, available: !occupied && canStart?() != false)
         if let shown = callOffer, !callState.isFresh(shown.id, at: now) || occupied || canStart?() == false {
@@ -36,7 +70,8 @@ extension MeetingModel {
         if callOffer?.id == id { callOffer = nil; callPanel.hide(); changed?() }
     }
     func acceptDetectedCall(_ id: UUID) {
-        guard callOffersEnabled, !callDetectionSuspended, !occupied, canStart?() != false,
+        guard allowProductEffect(.capture) else{return}
+        guard !nativeClosing, callOffersEnabled, !callDetectionSuspended, !occupied, canStart?() != false,
               let offer = callOffer, offer.id == id, callState.isFresh(id, at: ProcessInfo.processInfo.systemUptime) else {
             status = "That call offer is no longer available. Open Meetings to choose sources."; dismissDetectedCall(id); return
         }
@@ -51,7 +86,8 @@ extension MeetingModel {
         start(title: "Teams meeting · " + Date().formatted(date: .abbreviated, time: .shortened), mic: true, source: offer.signal.source, live: liveEnabled)
     }
     func chooseCallOffers(_ enabled: Bool) {
-        callOffersEnabled = enabled; UserDefaults.standard.set(enabled, forKey: "teamsMeetingOffers")
+        guard !nativeClosing else { return }
+        callOffersEnabled = enabled; storeMeetingPreference(enabled, forKey: "teamsMeetingOffers")
         stopCallDetection(); if enabled { startCallDetection() }
     }
 }

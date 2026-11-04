@@ -10,14 +10,27 @@ public enum MeetingReadContract {
         output: .init([.init("text", .string), .init("next_offset", .number), .init("has_more", .boolean)]), timeoutSeconds: 30)
     public static func text(_ meeting: Meeting, notebook: MeetingNotebook?, transcript: MeetingTranscript?, personal: Bool) -> String {
         var text = "Meeting \(meeting.id.uuidString) · \(meeting.title)\n\(meeting.created.ISO8601Format())\n"
-        if let notebook { text += notebook.markdown(title: meeting.title, includeThoughts: personal) }
+        if let notebook {
+            if notebook.sourceDigest != nil {
+                if let transcript {
+                    if !notebook.isCurrent(for: transcript) {
+                        text += "\nSaved generated notes need review: these historical notes are unverified for the current transcript because their source transcript or speaker information has changed. Use the current transcript for owners, dates and quoted words until notes are regenerated.\n\n"
+                    }
+                } else {
+                    text += "\nSaved generated notes need review: these historical notes are unverified because their source transcript is unavailable.\n\n"
+                }
+            }
+            text += notebook.markdown(title: meeting.title, includeThoughts: personal)
+        }
         if let transcript {
             text += "\n## Transcript (\(transcript.providerID ?? "apple"))\n"
             for line in transcript.utterances.sorted(by: { $0.start < $1.start }) {
+                let alternate=transcript.isKeptRecognitionAlternative(line.id) ? MeetingTranscript.keptRecognitionAlternativeLabel + " · " : ""
                 let speaker = line.speaker.flatMap { transcript.names[$0] } ?? "Unassigned speaker"
-                text += String(format: "[%02d:%02d]", Int(line.start)/60, Int(line.start)%60) + " \(speaker): \(line.correction ?? line.text)\n"
+                text += String(format: "[%02d:%02d]", Int(line.start)/60, Int(line.start)%60) + " \(alternate)\(speaker): \(line.correction ?? line.text)\n"
             }
         }
+        text += transcript?.pendingTranscriptionText ?? ""
         return text
     }
     public static func page(_ text: String, offset: Double) throws -> [String: PluginValue] {

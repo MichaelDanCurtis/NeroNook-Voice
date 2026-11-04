@@ -146,3 +146,87 @@ callback({...taskState,selected:'no-explicit-tasks',actionCards:'[]',actionCover
 assert.equal(elements.get('actionCoverage').hidden,false);
 assert.ok(elements.get('actionCoverage').textContent.includes('Check other phrasing'));
 console.log('PASS: limited-language coverage remains visible even with no automatic tasks');
+
+// Setup guidance follows actual native provider/readiness state, including audio-only mode.
+for (const [provider, label] of [['apple','Apple Speech'],['nemotron','Nemotron 3.5'],['parakeet','Parakeet']]) {
+  callback({...state,asrProvider:provider,liveEnabled:true,parakeetReady:true});
+  assert.ok(elements.get('liveHint').textContent.includes(label),provider+' names the chosen recognizer');
+  assert.equal(elements.get('prepareLive').hidden,true);
+  assert.equal(elements.get('record').disabled,false);
+  if(provider==='parakeet') assert.match(elements.get('liveHint').textContent,/pauses/);
+  else assert.ok(!elements.get('liveHint').textContent.includes('10 seconds'));
+  callback({...state,asrProvider:provider,liveEnabled:false,parakeetReady:true});
+  assert.match(elements.get('liveHint').textContent,/Audio-only/);
+  assert.ok(!elements.get('liveHint').textContent.includes('Live words'));
+}
+for (const [provider,label] of [['nemotron','Nemotron 3.5'],['parakeet','Parakeet']]) {
+  callback({...state,asrProvider:provider,liveEnabled:true,parakeetReady:false});
+  assert.ok(elements.get('liveHint').textContent.includes(label));
+  assert.match(elements.get('liveHint').textContent,/Download/);
+  assert.match(elements.get('liveHint').textContent,/audio.only/i);
+  assert.equal(elements.get('prepareLive').hidden,false);
+  assert.equal(elements.get('record').disabled,false); // Existing audio-only recording remains available.
+}
+callback({...state,liveEnabled:true});
+assert.match(elements.get('liveHint').textContent,/Apple Speech/);
+callback({...state,asrProvider:'future-provider',liveEnabled:true});
+assert.match(elements.get('liveHint').textContent,/Choose a supported speech model/);
+callback({...state,asrProvider:'nemotron',liveEnabled:true,parakeetReady:true,busy:true});
+assert.equal(elements.get('liveASR').disabled,true);assert.equal(elements.get('record').disabled,true);
+elements.get('liveASR').value='parakeet';elements.get('liveASR').onchange();
+assert.deepEqual(emitted.pop(),{name:'process',values:{action:'asr:parakeet'}});
+console.log('PASS: provider-specific live guidance, model-not-ready and audio-only states; existing controls and selection contract retained');
+
+// Actual review renderer, fake DOM only. An old closure must never borrow a new selection.
+const reviewA={count:2,open:true,recognitionComplete:true,busy:false,meeting:'meeting-A',provider:'apple',revision:'revision-A',candidate:'candidate-A',digest:'digest-A',track:'mic',attempt:'attempt-A',status:'May overlap reviewed words',candidateTitle:'00:02–00:09 microphone',protectedTitle:'00:04–00:08 Mara',modelRevision:'authored-model',runtimeRevision:'authored-runtime',candidateText:'full page A',candidateOffset:0,candidateNext:1024,candidateMore:true,protectedText:'protected page A',protectedOffset:0,protectedNext:1000,protectedMore:true,protectedRow:0,protectedRows:2,previousCandidate:'',nextCandidate:'candidate-A2'};
+const reviewB={...reviewA,meeting:'meeting-B',provider:'nemotron',revision:'revision-B',candidate:'candidate-B',digest:'digest-B',candidateText:'full page B'};
+const reviewState=v=>({...state,selected:v.meeting,notebookPage:'transcript',transcriptionReview:JSON.stringify(v)});
+emitted.length=0;callback(reviewState(reviewA));
+assert.equal(elements.get('transcriptionCandidateText').textContent,'full page A');
+assert.equal(elements.get('transcriptionCandidateTitle').textContent,'00:02–00:09 microphone');assert.equal(elements.get('transcriptionProtectedTitle').textContent,'00:04–00:08 Mara');assert.equal(elements.get('transcriptionCandidateOrigin').textContent,'authored-model · authored-runtime · Attempt attempt-A');
+assert.equal(elements.get('transcriptionProtectedText').textContent,'protected page A');
+assert.equal(elements.get('transcriptionProtectedPage').textContent,'1 / 2');
+assert.equal(elements.get('transcriptionReviewStatus').textContent,'May overlap reviewed words');assert.equal(elements.get('transcriptionComparison').hidden,false);
+assert.equal(elements.get('transcriptionReviewHeading').textContent,'Recognition complete · 2 passages need review');
+const oldKeep=elements.get('transcriptionKeepBoth').onclick;
+oldKeep();let event=emitted.pop();assert.equal(event.name,'transcriptionReview');
+for(const key of ['meeting','provider','revision','candidate','digest'])assert.equal(event.values[key],reviewA[key]);
+assert.equal(event.values.choice,'keepBoth');assert.equal(event.values.source,'candidate');assert.equal(event.values.row,0);assert.equal(event.values.offset,0);
+elements.get('transcriptionKeepCorrection').onclick();event=emitted.pop();assert.equal(event.values.choice,'keepCorrection');assert.equal(event.values.candidate,'candidate-A');
+elements.get('transcriptionCandidateMore').onclick();event=emitted.pop();assert.equal(event.values.source,'candidate');assert.equal(event.values.offset,1024);assert.equal(event.values.candidate,'candidate-A');
+elements.get('transcriptionProtectedMore').onclick();event=emitted.pop();assert.equal(event.values.source,'protected');assert.equal(event.values.row,0);assert.equal(event.values.offset,1000);
+elements.get('transcriptionProtectedNext').onclick();event=emitted.pop();assert.equal(event.values.source,'protected');assert.equal(event.values.row,1);assert.equal(event.values.offset,0);
+elements.get('transcriptionCandidateNext').onclick();event=emitted.pop();assert.equal(event.values.choice,'page');assert.equal(event.values.candidate,'candidate-A2');assert.equal(event.values.meeting,'meeting-A');assert.equal(event.values.revision,'revision-A');
+callback(reviewState(reviewB));emitted.length=0;oldKeep();assert.equal(emitted.length,0,'old A handler must not borrow B tuple');
+callback(reviewState({...reviewA,busy:true}));emitted.length=0;elements.get('transcriptionKeepCorrection').onclick();assert.equal(emitted.length,0,'busy review must not submit');
+console.log('PASS: pending-review tuple, complete page controls and stale/busy handler suppression');
+
+// While recognition is busy the comparison frame must retain its genuine Stop.
+const processingReview={...reviewA,busy:true,processing:true,progress:0.35,recognitionComplete:false};
+callback({...reviewState(processingReview),busy:true,processing:true,progress:0.35});
+assert.equal(elements.get('transcriptionReviewStop').hidden,false);
+assert.equal(elements.get('transcriptionReviewStop').disabled,false);
+assert.equal(elements.get('transcriptionKeepCorrection').disabled,true);
+assert.equal(elements.get('transcriptionKeepBoth').disabled,true);
+assert.match(elements.get('transcriptionReviewHeading').textContent,/in progress/i);
+assert.equal(elements.get('progress').value,0.35);assert.equal(elements.get('progress').hidden,false);
+emitted.length=0;elements.get('transcriptionReviewStop').onclick();
+const stopEvent=emitted.pop();assert.equal(stopEvent.name,'process');assert.equal(stopEvent.values.action,'cancel');assert.equal(emitted.length,0);
+console.log('PASS: busy review keeps actual stop-processing control');
+callback(reviewState({...reviewA,processing:false,recognitionComplete:false}));
+assert.match(elements.get('transcriptionReviewHeading').textContent,/incomplete/i);
+assert.equal(elements.get('transcriptionReviewStop').hidden,true);
+assert.equal(elements.get('transcriptionReviewStop').disabled,true);
+
+// The real view must show source snapshot semantics and clear stale notices.
+const refinementNotice='Refined from reviewed live words. Later live edits stay separate.';
+callback({...state,refinementNotice});
+assert.equal(elements.get('refinementNotice').hidden,false);
+assert.equal(elements.get('refinementNotice').textContent,refinementNotice);
+callback({...state,refinementNotice:''});
+assert.equal(elements.get('refinementNotice').hidden,true);
+assert.equal(elements.get('refinementNotice').textContent,'');
+callback({...state});
+assert.equal(elements.get('refinementNotice').hidden,true);
+assert.equal(elements.get('refinementNotice').textContent,'');
+console.log('PASS: first-refinement notice appears and clears with source state');

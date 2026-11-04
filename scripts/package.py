@@ -3,6 +3,7 @@
 import argparse, hashlib, json, os, plistlib, shutil, subprocess, tempfile, sys
 from pathlib import Path
 from speaker_runtime import package_runtime
+from asr_dependencies import inspect as inspect_asr_dependencies
 from signing import resolve, sign, verify_update
 ROOT = Path(__file__).resolve().parents[1]
 def run(args, **kw):
@@ -33,6 +34,10 @@ def main():
         shutil.copy2(worker_bin/'NeroNemotron', helpers/'NeroASR')
         # Keep original build symbols for debugging; strip only the staged shared worker.
         run(['xcrun', 'strip', '-S', '-x', helpers/'NeroASR'])
+        # Read load commands/cache metadata before any staged code is signed.
+        # This proves current-OS providers, not minimum-OS launch compatibility.
+        dependency_audit = inspect_asr_dependencies(helpers/'NeroASR', minimum_macos='26.0')
+        (app/'Contents/Resources/ASRDependencyAudit.json').write_text(json.dumps(dependency_audit, indent=2)+'\n')
         shutil.copytree(ROOT/'Workers/NemotronSpeakers', app/'Contents/Resources/NemotronSpeakers', ignore=shutil.ignore_patterns('__pycache__'))
         package_runtime(app/'Contents/Resources/speaker-runtime.tar.gz', identity)
         shutil.copy2(worker_bin/'mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib', helpers/'mlx.metallib')

@@ -5,6 +5,7 @@ import Foundation
 
 extension MeetingModel {
     func saveNotes(thoughts: String, summary: String, decisions: String, actions: String, reviewed: Bool) throws {
+        guard permitMeetingWork() else { throw CancellationError() }
         guard let selected, let store, !summarizing else { throw VoiceProblem.message("Select a meeting before saving notes.") }
         var value = notebook ?? MeetingNotebook(meetingID: selected.id)
         value.edit(thoughts: thoughts, summary: summary, decisions: decisions, actions: actions, reviewed: reviewed)
@@ -12,7 +13,7 @@ extension MeetingModel {
         searchLibrary()
     }
     func openNoteSource(_ id: String) {
-        guard !occupied, let selected, let store, let notebook,
+        guard permitMeetingWork(), !occupied, let selected, let store, let notebook,
               let item = ((notebook.evidence ?? []) + (notebook.actionResolutions ?? []).flatMap(\.evidence)).first(where: { $0.id.uuidString == id }) else { return }
         do {
             // Reread the durable selected variant immediately before navigation.
@@ -27,7 +28,11 @@ extension MeetingModel {
         } catch { status = error.localizedDescription }
     }
     func summarize() {
+        guard allowProductEffect(.model) else{return}
+        guard permitMeetingWork() else { return }
+        let owner = LocalFoundationModelWork.currentOwner
         guard !occupied, canStart?() != false, let selected, let transcript, let store, !transcript.utterances.isEmpty else { status = "Transcribe this recording first."; return }
+        do{try transcript.requireResolvedTranscription()}catch{status=error.localizedDescription;return}
         stopPlayback(); summarizing = true; processProgress = 0; status = "Creating a local summary · no cloud upload"
         let original = notebook ?? MeetingNotebook(meetingID: selected.id)
         let sourceProvider = asrProvider, sourceWasLive = showingLiveTranscript
@@ -35,7 +40,10 @@ extension MeetingModel {
             defer { summarizing = false; summaryTask = nil }
             do {
                 var result = try await MeetingSummarizer.draft(transcript, meetingID: selected.id) { [weak self] progress in
-                    Task { @MainActor in self?.processProgress = progress; self?.changed?() }
+                    Task { @MainActor in
+                        guard let self, self.ownedMeetingTasks.permits(owner) else { return }
+                        self.processProgress = progress; self.changed?()
+                    }
                 }
                 try Task.checkCancellation()
                 guard self.selected?.id == selected.id else { throw CancellationError() }
@@ -50,41 +58,56 @@ extension MeetingModel {
                 try store.saveGeneratedNotebook(result, replacing: original, provider: sourceProvider, live: sourceWasLive); notebook = result; notebookPage = "notes"; status = "Summary draft saved · review facts, owners and dates"; searchLibrary()
             } catch { status = error is CancellationError ? "Summary stopped · existing notes retained" : error.localizedDescription }
         }
+        retainMeetingTask(summaryTask, owner: owner)
     }
     func searchLibrary() {
+        guard permitMeetingWork() else { return }
+        let owner = LocalFoundationModelWork.currentOwner
+        if searchOwner != nil && searchOwner != owner && searchTask != nil { return }
         searchTask?.cancel()
+        let generation = UUID(); searchGeneration = generation; searchOwner = owner
         let query = libraryQuery.trimmingCharacters(in: .whitespacesAndNewlines), meetings = Array(library.prefix(500)), store = store
-        guard !query.isEmpty else { searchIDs = nil; return }
+        guard !query.isEmpty else { searchTask = nil; searchOwner = nil; searchIDs = nil;transcriptionSearchPending=[];transcriptionSearchRecovery=[]; return }
         searchTask = Task { [weak self] in
-            let worker = Task.detached { () -> Set<UUID> in
-                var result = Set<UUID>()
+            let worker = Task.detached { () -> (Set<UUID>,Set<UUID>,Set<UUID>) in
+                var result = Set<UUID>(),pending=Set<UUID>(),recovery=Set<UUID>()
                 for meeting in meetings {
                     if Task.isCancelled { break }
                     var text = meeting.title
                     if let link = try? store?.calendarLink(meeting.id) { text += "\n" + link.searchableText }
                     if let notebook = try? store?.notebook(meeting.id) { text += "\n" + notebook.searchableText }
                     for provider in MeetingASRProvider.allCases {
-                        if let transcript = try? store?.transcript(meeting.id, provider: provider) {
-                            text += "\n" + transcript.names.values.joined(separator: " ")
-                            for line in transcript.utterances { text += "\n" + (line.correction ?? line.text) }
+                        let hasV2=store?.hasTranscriptV2(meeting.id,provider:provider) ?? false
+                        do {
+                            if let transcript=try store?.transcript(meeting.id,provider:provider) {
+                                if transcript.hasPendingTranscription{pending.insert(meeting.id)}
+                                text += "\n"+transcript.names.values.joined(separator:" ")+transcript.pendingTranscriptionText
+                                for line in transcript.utterances{text += "\n"+(line.correction ?? line.text)}
+                            }
+                        } catch {
+                            if hasV2{recovery.insert(meeting.id);break}
                         }
-                        if let transcript = try? store?.liveTranscript(meeting.id, provider: provider) {
-                            for line in transcript.utterances { text += "\n" + (line.correction ?? line.text) }
+                        if let transcript=try? store?.liveTranscript(meeting.id,provider:provider){
+                            for line in transcript.utterances{text += "\n"+(line.correction ?? line.text)}
                         }
                     }
                     if text.localizedCaseInsensitiveContains(query) { result.insert(meeting.id) }
                 }
-                return result
+                return (result,pending,recovery)
             }
             let ids = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
-            guard !Task.isCancelled, let self, self.libraryQuery.trimmingCharacters(in: .whitespacesAndNewlines) == query else { return }
-            self.searchIDs = ids; self.changed?()
+            guard let self else { return }
+            defer { if self.searchGeneration == generation { self.searchTask = nil; self.searchOwner = nil } }
+            guard !Task.isCancelled, self.libraryQuery.trimmingCharacters(in: .whitespacesAndNewlines) == query else { return }
+            self.searchIDs = ids.0;self.transcriptionSearchPending=ids.1;self.transcriptionSearchRecovery=ids.2; self.changed?()
         }
+        retainMeetingTask(searchTask, owner: owner)
     }
     func exportNotes(includeThoughts: Bool) {
+        guard allowProductEffect(.externalFiles) else{return}
         guard let notebook, let selected else { return }
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(notebook.markdown(title: selected.title, includeThoughts: includeThoughts) + (calendarLink?.markdown ?? ""), forType: .string)
+        NSPasteboard.general.setString((transcript?.hasPendingTranscription == true ? MeetingTranscript.transcriptionReviewNotice + "\n\n" : "") + notebook.markdown(title: selected.title, includeThoughts: includeThoughts) + (calendarLink?.markdown ?? ""), forType: .string)
         status = includeThoughts ? "Copied notes including My thoughts" : "Copied meeting notes · My thoughts excluded"
     }
 }

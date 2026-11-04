@@ -41,4 +41,8 @@ import ModuleCore
  func cancelPending(){if pending != nil || !waiters.isEmpty{stop("Qwen speech cancelled")}}
  private func arm(_ seconds:Int){timer?.cancel();timer=Task{[weak self] in try? await Task.sleep(for:.seconds(seconds));guard !Task.isCancelled else{return};self?.stop("Qwen speech timed out or its idle model was released")}}
  func stop(_ message:String="Qwen speech stopped") {guard !closed else{return};closed=true;timer?.cancel();reader?.cancel();worker.stop();let error=VoiceProblem.message(message);let old=waiters;waiters=[];old.forEach{$0.resume(throwing:error)};pending?.finish(throwing:error);pending=nil}
+ // The retained original reader finishes only after descriptor close and actual
+ // worker.reap(). receive/stop must never await their own reader.
+ func retirementCompletion()->Task<Void,Never>?{reader}
+ func stopAndWait()async{let original=reader;stop();await original?.value}
 }

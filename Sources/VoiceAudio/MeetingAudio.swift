@@ -18,6 +18,11 @@ public final class MeetingAudioWriter: @unchecked Sendable {
     private var chunks: [String: MeetingChunk] = [:]
     private var converters: [String: AVAudioConverter] = [:]
     private var inputFormats: [String: AVAudioFormat] = [:]
+    // Capture callbacks and converter output have different buffering clocks.
+    // Keep one source-input end and one durable16k end per track across rotation.
+    private var inputEnds: [String: Double] = [:]
+    private var outputEnds: [String: Double] = [:]
+    private let clockJitter = 0.002
     private var levels: [String: Double] = [:]
     private var last: [String: Double] = [:]
     private let format = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1)!
@@ -32,6 +37,9 @@ public final class MeetingAudioWriter: @unchecked Sendable {
          storageQueue: DispatchQueue) throws {
         queue = storageQueue
         self.store = store; self.meeting = meeting; committedDuration = meeting.duration; self.liveFeed = liveFeed; self.speakerFeed = speakerFeed; serial = meeting.chunks.count; try store.save(meeting)
+        for chunk in meeting.chunks {
+            outputEnds[chunk.track] = max(outputEnds[chunk.track] ?? 0, chunk.start + chunk.duration)
+        }
         publishSnapshot()
     }
     /// Prepared observers start at the next durable buffer, without delaying
@@ -50,16 +58,34 @@ public final class MeetingAudioWriter: @unchecked Sendable {
     }
     private func write(_ input: AVAudioPCMBuffer, track: String, start: Double) throws {
         guard start <= 4 * 3600 else { throw VoiceProblem.message("Four-hour recording limit reached. Start another meeting to continue.") }
-        if input.format == format { try persist(input, track: track, start: start); return }
-        if let previous = inputFormats[track], previous != input.format { throw VoiceProblem.message("Audio format changed. Resume to use the new device format.") }
-        if converters[track] == nil { inputFormats[track] = input.format; converters[track] = AVAudioConverter(from: input.format, to: format) }
+        if let previous = inputFormats[track], previous != input.format {
+            try drainConverter(track); converters[track] = nil
+            throw VoiceProblem.message("Audio format changed. Resume to use the new device format.")
+        }
+        let previous = inputEnds[track] ?? outputEnds[track]
+        if let previous, start < previous - clockJitter {
+            // A timestamp overlap is not proof of duplicate content. Preserve
+            // the prior converter tail, then report the anomaly explicitly.
+            try drainConverter(track); converters[track] = nil
+            throw VoiceProblem.message("Recording clock moved backward. Saved audio is retained; start a new recording.")
+        }
+        let continuous = previous.map { abs(start - $0) <= clockJitter } ?? false
+        if !continuous {
+            try drainConverter(track); converters[track] = nil
+            try close(track)
+            outputEnds[track] = (start * 16000).rounded() / 16000
+        }
+        inputFormats[track] = input.format
+        inputEnds[track] = (continuous ? previous! : start) + Double(input.frameLength) / input.format.sampleRate
+        if input.format == format { try persist(input, track: track, start: outputEnds[track]!); return }
+        if converters[track] == nil { converters[track] = AVAudioConverter(from: input.format, to: format) }
         guard let converter = converters[track], let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 65536) else { throw VoiceProblem.message("Cannot prepare audio storage") }
         var fed = false; var error: NSError?
         converter.convert(to: output, error: &error) { _, status in
             if fed { status.pointee = .noDataNow; return nil }; fed = true; status.pointee = .haveData; return input
         }
         if let error { throw error }; guard output.frameLength > 0 else { return }
-        try persist(output, track: track, start: start)
+        try persist(output, track: track, start: outputEnds[track]!)
     }
     private func persist(_ output: AVAudioPCMBuffer, track: String, start: Double) throws {
         var peak: Float = 0
@@ -76,6 +102,7 @@ public final class MeetingAudioWriter: @unchecked Sendable {
         }
         try files[track]!.write(from: output)
         chunks[track]!.duration = Double(files[track]!.length) / 16000
+        outputEnds[track] = chunks[track]!.start + chunks[track]!.duration
         liveFeed?.append(output, track: track, start: start)
         speakerFeed?.append(output, track: track, start: start)
         if chunks[track]!.duration >= 15 { try close(track) }
@@ -107,21 +134,39 @@ public final class MeetingAudioWriter: @unchecked Sendable {
         } }
     }
     public func finishSynchronously() { queue.sync { _ = try? finalize(state: "saved", issue: "Voice closed; recording was saved.") } }
+    /// A failed finalize can leave later tracks in the owned file dictionary.
+    /// Close every remaining own file on the original serial writer queue; the
+    /// caller retains the original error and must not infer successful saving.
+    public func closeAfterFailure() async -> Int {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                self.active = false
+                let ownedFiles = self.files.count
+                self.files.removeAll(); self.converters.removeAll(); self.inputFormats.removeAll()
+                self.publishSnapshot(); continuation.resume(returning: ownedFiles)
+            }
+        }
+    }
+    private func drainConverter(_ track: String) throws {
+        guard let converter = converters[track] else { return }
+        for _ in 0..<16 {
+            let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4096)!
+            var error: NSError?
+            let status = converter.convert(to: output, error: &error) { _, state in state.pointee = .endOfStream; return nil }
+            if let error { throw error }
+            if output.frameLength > 0 {
+                guard let end = outputEnds[track] else { throw VoiceProblem.message("Missing recording output clock") }
+                try persist(output, track: track, start: end)
+            }
+            if status == .endOfStream || output.frameLength == 0 { return }
+        }
+        throw VoiceProblem.message("Audio conversion could not finish. Saved audio is retained.")
+    }
     private func finalize(state: String, issue: String) throws -> Meeting {
         active = false
         if failure == nil {
-            for (track, converter) in converters {
-                for _ in 0..<16 {
-                    let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4096)!
-                    var error: NSError?
-                    let status = converter.convert(to: output, error: &error) { _, state in state.pointee = .endOfStream; return nil }
-                    if let error { fail(error.localizedDescription); break }
-                    if output.frameLength > 0 {
-                        let lastEnd = max(meeting.chunks.filter { $0.track == track }.map { $0.start + $0.duration }.max() ?? 0, chunks[track].map { $0.start + $0.duration } ?? 0)
-                        try persist(output, track: track, start: lastEnd)
-                    }
-                    if status == .endOfStream || output.frameLength == 0 { break }
-                }
+            for track in Array(converters.keys) {
+                do { try drainConverter(track) } catch { fail(error.localizedDescription); break }
             }
         }
         converters = [:]

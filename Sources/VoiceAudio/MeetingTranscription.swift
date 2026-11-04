@@ -6,7 +6,9 @@ import ModuleCore
 public enum MeetingTranscription {
     /// Construct a track on disk using bounded buffers, retaining gaps on the shared timeline.
     public static func assemble(_ meeting: Meeting, track: String, store: MeetingStore, to url: URL) async throws {
+        try Task.checkCancellation()
         let work = Task.detached {
+            try Task.checkCancellation()
             let format = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1)!
             let output = try AVAudioFile(forWriting: url, settings: format.settings)
             let silence = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 16000)!
@@ -44,9 +46,44 @@ public enum MeetingTranscription {
                 }
             }
         }
+        let cancellation = MeetingAnalyzerCancellation(analyzer)
         try await withTaskCancellationHandler {
             do { try await analyzer.start(inputAudioFile: file, finishAfterFile: true); try await task.value; try Task.checkCancellation() }
-            catch { task.cancel(); await analyzer.cancelAndFinishNow(); throw error }
-        } onCancel: { task.cancel(); Task { await analyzer.cancelAndFinishNow() } }
+            catch {
+                task.cancel()
+                let originalCancellation = cancellation.start()
+                await originalCancellation.value
+                _ = try? await task.value
+                throw error
+            }
+        } onCancel: { task.cancel(); _ = cancellation.start() }
+        // Seal the cancellation launcher after natural completion so a racing
+        // handler cannot create an unobserved analyzer cancellation task.
+        await cancellation.finish()?.value
+        try Task.checkCancellation()
+    }
+}
+
+// Cancellation may arrive on any executor while the original start is
+// returning. Both paths share and join the same actual analyzer cancellation.
+private final class MeetingAnalyzerCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private let analyzer: SpeechAnalyzer
+    private var original: Task<Void, Never>?
+    private var finished = false
+    init(_ analyzer: SpeechAnalyzer) { self.analyzer = analyzer }
+    func start() -> Task<Void, Never> {
+        lock.lock(); defer { lock.unlock() }
+        if let original { return original }
+        if finished { return Task {} }
+        let analyzer = analyzer
+        let task = Task { await analyzer.cancelAndFinishNow() }
+        original = task
+        return task
+    }
+    func finish() -> Task<Void, Never>? {
+        lock.lock(); defer { lock.unlock() }
+        finished = true
+        return original
     }
 }

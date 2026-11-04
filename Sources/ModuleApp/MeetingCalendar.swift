@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import ModuleCore
+import VoiceAudio
 import NookPluginSDK
 
 extension MeetingModel {
@@ -11,8 +12,17 @@ extension MeetingModel {
         if let calendarPendingEntry, !entries.contains(calendarPendingEntry) { cancelCalendar(); calendarStatus = "Calendar access changed. Saved link kept." }
         if !calendarProviders.contains(where: { $0.address.key == calendarProvider }) { calendarProvider = calendarProviders.first?.address.key ?? "" }
     }
-    func cancelCalendar() {
-        if let calendarRequest { cancelCalendarInvocation?(calendarRequest) }
+    func cancelCalendar(force: Bool = false) {
+        if !force, (calendarTask != nil || calendarRequest != nil), let calendarOwner,
+           calendarOwner != LocalFoundationModelWork.currentOwner { return }
+        let originalTask = calendarTask
+        if let calendarRequest {
+            if let original = capturedMeetingProviders[calendarRequest] {
+                do { try original.request.cancel() }
+                catch { providerCancelIssues[calendarRequest] = "cancel-enqueue-failed" }
+            } else if captureProviderRequest == nil { cancelCalendarInvocation?(calendarRequest) }
+            settleMeetingProvider(calendarRequest, originalTask: originalTask)
+        }
         calendarRequest = nil; calendarPendingEntry = nil; calendarTask?.cancel(); calendarTask = nil; calendarBusy = false; calendarPurpose = ""
     }
     func loadCalendarLink() {
@@ -32,6 +42,7 @@ extension MeetingModel {
         if calendarEvents.isEmpty { listCalendar(day: calendarDay, provider: calendarProvider, offset: 0) }
     }
     func listCalendar(day: String, provider: String, offset: Int = 0) {
+        guard allowProductEffect(.provider) else{return}
         guard !calendarBusy, !askingQuestion else { return }
         do {
             let (start, end) = try MeetingCalendarDay.range(day)
@@ -41,18 +52,31 @@ extension MeetingModel {
         } catch { calendarStatus = error.localizedDescription }
     }
     private func invokeCalendarAction(_ entry: PluginCatalogEntry, values: [String: PluginValue], purpose: String) {
+        guard allowProductEffect(.provider) else{return}
+        guard permitMeetingWork() else { return }
+        guard permitsMeetingProvider() else { calendarStatus = "Provider request limit reached; no new request was sent."; return }
+        let owner = LocalFoundationModelWork.currentOwner
         do {
             try entry.action!.input.validate(values)
-            let request = UUID(); calendarRequest = request; calendarPendingEntry = entry; calendarBusy = true; calendarPurpose = purpose
+            let request = UUID(); calendarOwner = owner
+            let original = captureProviderRequest?(request)
+            if let original { capturedMeetingProviders[request] = (owner, original) }
+            else if captureProviderRequest != nil { throw VoiceProblem.message("The original provider connection is no longer available.") }
+            else { markMeetingUnverified("provider-local-write-return-unavailable", owner: owner) }
+            pendingMeetingProviders[request] = owner; providerEffectUncertain.insert(owner)
+            calendarRequest = request; calendarPendingEntry = entry; calendarBusy = true; calendarPurpose = purpose
             calendarStatus = purpose == "list" ? "Reading selected calendar events…" : "Checking the linked event…"
-            invokeCalendar?(request, entry.address, values)
+            if let original { try original.invoke(address: entry.address, values: values) }
+            else { invokeCalendar?(request, entry.address, values) }
             calendarTask = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(65)); guard !Task.isCancelled, let self, self.calendarRequest == request else { return }
                 self.cancelCalendar(); self.calendarStatus = "Calendar did not respond. Saved link kept."
             }
-        } catch { calendarStatus = error.localizedDescription }
+            retainMeetingTask(calendarTask, owner: owner)
+        } catch { cancelCalendar(force: true); calendarStatus = error.localizedDescription }
     }
     func receiveCalendar(_ request: UUID, update: PluginRunUpdate) {
+        if update.phase.terminal { settleMeetingProvider(request, originalTask: calendarRequest == request ? calendarTask : nil) }
         guard calendarRequest == request, let entry = calendarPendingEntry, update.phase.terminal else { return }
         let purpose = calendarPurpose
         calendarRequest = nil; calendarPendingEntry = nil; calendarTask?.cancel(); calendarTask = nil; calendarBusy = false; calendarPurpose = ""
@@ -84,7 +108,7 @@ extension MeetingModel {
         } catch { calendarStatus = error.localizedDescription }
     }
     func linkCalendar(_ index: String) {
-        guard !calendarBusy, !askingQuestion, let i = Int(index), calendarEvents.indices.contains(i), let entry = calendarProviders.first(where: { $0.address.key == calendarProvider }),
+        guard permitMeetingWork(), !calendarBusy, !askingQuestion, let i = Int(index), calendarEvents.indices.contains(i), let entry = calendarProviders.first(where: { $0.address.key == calendarProvider }),
               Date().timeIntervalSince(calendarObserved) <= 120 else { calendarStatus = "Refresh the calendar list before linking."; return }
         do {
             let link = MeetingCalendarLink(provider: entry.address.plugin, providerName: entry.action!.title, event: calendarEvents[i], verifiedAt: calendarObserved)
@@ -95,13 +119,14 @@ extension MeetingModel {
         } catch { calendarStatus = error.localizedDescription }
     }
     func unlinkCalendar() {
-        guard !calendarBusy, !askingQuestion else { return }
+        guard permitMeetingWork(), !calendarBusy, !askingQuestion else { return }
         do {
             if let selected { try store?.saveCalendarLink(nil, id: selected.id); calendarLibrary[selected.id] = nil }
             calendarLink = nil; calendarStatus = "Calendar link removed · recording, transcripts and notes retained"; searchLibrary()
         } catch { calendarStatus = error.localizedDescription }
     }
     func verifyCalendar(open: Bool = false) {
+        guard allowProductEffect(.provider) else{return}
         guard !calendarBusy, let link = calendarLink else { return }
         guard let entry = calendarReadEntries.first(where: { $0.address.plugin == link.provider }) else { calendarStatus = "Calendar provider unavailable. Saved link kept."; return }
         do { invokeCalendarAction(entry, values: ["reference": .string(try PluginCalendarContract.json(link.event.reference))], purpose: open ? "open" : "verify") }

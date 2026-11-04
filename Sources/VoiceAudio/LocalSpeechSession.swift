@@ -82,9 +82,19 @@ import ModuleCore
     }
     func stop() {
         guard !closed else { return }; closed = true; ready = false
-        timer?.cancel(); timer = nil; reader?.cancel(); reader = nil; worker.stop()
+        timer?.cancel(); timer = nil; reader?.cancel(); worker.stop()
         let old = waiters; waiters = []; old.forEach { $0.resume(throwing: CancellationError()) }
         let request = pending; pending = nil; request?.1.resume(throwing: CancellationError())
+    }
+    /// The exact original reader completes only after closing its descriptor and
+    /// reaping its actual worker. Stop remains immediate; owners may join this
+    /// separately before releasing a retired session or admitting a successor.
+    /// Never await this from receive/stop, which are called by that same reader.
+    func retirementCompletion() -> Task<Void, Never>? { reader }
+    func stopAndWait() async {
+        let original = reader
+        stop()
+        await original?.value
     }
 }
 
