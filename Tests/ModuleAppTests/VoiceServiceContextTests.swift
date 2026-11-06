@@ -331,3 +331,73 @@ extension VoiceServiceContextTests {
         XCTAssertEqual(json["state"] as? String, "clean")
     }
 }
+
+// Real signed-self native connections into the isolated production listener.
+// No approval request is sent: attachment must neither grant access nor record.
+extension VoiceServiceContextTests {
+    @MainActor func testActualUnapprovedConnectionsDetachAndReconnectWithoutExhaustingSlots() async throws {
+        let (runtime, prepared, parent) = try await listenerFixture()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        do {
+            // Exceed the four simultaneous-client limit sequentially. A leaked
+            // context admission would refuse a later genuine handshake.
+            for _ in 0..<6 {
+                let client = try await LocalServiceConnection.connect(policy: prepared.policy.native)
+                let watchdog = Task {
+                    do { try await Task.sleep(for: .seconds(10)) } catch { return }
+                    client.stopIO()
+                }
+                do {
+                    let session = UUID(), nonce = UUID()
+                    try await client.send(.init(sequence: 0, session: session, payload: .attach(.init(
+                        serviceIdentifier: prepared.policy.serviceIdentifier, role: .moduleAdapter,
+                        nonce: nonce, features: ["retirement-v1", "plugin-message-v1"],
+                        requiredFeatures: ["retirement-v1", "plugin-message-v1"], requestedCapabilities: [],
+                        moduleIdentifier: prepared.policy.moduleIdentifier,
+                        resourceRevision: prepared.policy.resourceRevision))))
+                    let first = try await client.receive()
+                    let hello = try XCTUnwrap(first)
+                    guard case .hello(let greeting) = hello.payload else {
+                        throw VoiceServiceProblem.protocolViolation
+                    }
+                    XCTAssertEqual(hello.session, session)
+                    XCTAssertEqual(greeting.clientNonce, nonce)
+                    let connection = try XCTUnwrap(hello.connection)
+                    let context = try XCTUnwrap(runtime.contextForRetirementObservation(connection))
+                    XCTAssertFalse(context.approved)
+                    try await client.send(.init(sequence: 1, session: session,
+                        instance: hello.instance, connection: connection, payload: .detach))
+                    var sawDetached = false
+                    while let frame = try await client.receive() {
+                        XCTAssertEqual(frame.session, session)
+                        XCTAssertEqual(frame.connection, connection)
+                        switch frame.payload {
+                        case .heartbeat: break
+                        case .detached: XCTAssertFalse(sawDetached); sawDetached = true
+                        default: XCTFail("Unapproved attachment produced application or approval output")
+                        }
+                    }
+                    XCTAssertTrue(sawDetached)
+                    // Real EOF already retires the requester's IO owner. Do
+                    // not half-close a retired FD; join both original IOs.
+                    let completion = await client.retirement()
+                    XCTAssertNil(completion.failure)
+                    let retired = await context.retire(acknowledge: true).value
+                    XCTAssertTrue(retired)
+                    XCTAssertFalse(context.approved)
+                    XCTAssertNil(runtime.contextForRetirementObservation(connection))
+                    watchdog.cancel(); await watchdog.value
+                } catch {
+                    client.stopIO(); _ = await client.retirement()
+                    watchdog.cancel(); await watchdog.value
+                    throw error
+                }
+            }
+            let clean = await runtime.shutdown()
+            XCTAssertTrue(clean)
+        } catch {
+            _ = await runtime.shutdown()
+            throw error
+        }
+    }
+}
