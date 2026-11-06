@@ -99,7 +99,7 @@ extension MeetingModel {
             .init("transcriptionReview",input:.init([.init("meeting",.string),.init("provider",.string),.init("revision",.string),.init("candidate",.string),.init("digest",.string),.init("choice",.string),.init("source",.string),.init("row",.number,minimum:0,maximum:39999),.init("offset",.number,minimum:0,maximum:32000000)])),
             .init("notebook", input: .init([.init("command", .string), .init("page", .string, required: false), .init("thoughts", .string, required: false), .init("summary", .string, required: false), .init("decisions", .string, required: false), .init("actions", .string, required: false), .init("reviewed", .boolean, required: false), .init("personal", .boolean, required: false), .init("seconds", .number, required: false), .init("question", .string, required: false), .init("provider", .string, required: false), .init("citation", .string, required: false), .init("date", .string, required: false), .init("offset", .number, required: false), .init("event", .string, required: false), .init("enabled", .boolean, required: false)])),
             .init("record", input: .init([.init("title", .string), .init("mic", .boolean), .init("source", .string), .init("live", .boolean)])),
-            .init("pause"), .init("resume"), .init("stop"), .init("refresh"), .init("play"),
+            .init("pause"), .init("resume"), .init("stop"), .init("play"),
             .init("seek", input: .init([.init("time", .number)])), .init("select", input: .init([.init("id", .string)])),
             .init("rename", input: .init([.init("title", .string)])), .init("files"), .init("delete"), .init("new"),
             .init("process", input: .init([.init("action", .string)])),
@@ -125,6 +125,7 @@ extension MeetingModel {
         case "notebook":
             guard case .string(let command) = event.values["command"] else { return }
             switch command {
+            case "refresh": if !active { refreshSources(); refresh() }
             case "callStart", "callDismiss":
                 if case .string(let value) = event.values["event"], let id = UUID(uuidString: value) {
                     if command == "callStart" { acceptDetectedCall(id) } else { dismissDetectedCall(id) }

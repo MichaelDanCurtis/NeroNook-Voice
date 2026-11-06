@@ -230,3 +230,7 @@ callback({...state});
 assert.equal(elements.get('refinementNotice').hidden,true);
 assert.equal(elements.get('refinementNotice').textContent,'');
 console.log('PASS: first-refinement notice appears and clears with source state');
+
+// Refresh shares the existing notebook command envelope, keeping the native
+// declaration within the SDK's sixteen-event budget.
+elements.get('refresh').onclick();assert.deepEqual(JSON.parse(JSON.stringify(emitted.pop())),{name:'notebook',values:{command:'refresh'}});
