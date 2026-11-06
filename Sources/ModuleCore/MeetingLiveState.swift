@@ -70,7 +70,7 @@ public struct MeetingCatchUpWindow: Sendable {
     public let truncated: Bool
     public let digest: String
     public init(meetingID: UUID, transcript: MeetingTranscript, through end: Double, seconds: Double = 120) throws {
-        try transcript.validate()
+        try transcript.validate();try transcript.requireResolvedTranscription()
         guard end.isFinite, end >= 0, end <= 14430, seconds.isFinite, seconds >= 30, seconds <= 300 else { throw VoiceProblem.message("Invalid catch-up range") }
         let lower = max(0, end - seconds)
         self.meetingID = meetingID; self.end = end
@@ -83,7 +83,7 @@ public struct MeetingCatchUpWindow: Sendable {
             kept.append(line); bytes += cost
         }
         guard !kept.isEmpty else { throw VoiceProblem.message(candidates.isEmpty ? "No settled words in this time range yet." : "The newest transcript turn is too long for local catch-up.") }
-        var snapshot = transcript; snapshot.utterances = kept.reversed(); snapshot.completedTracks = []; snapshot.labelledTracks = []
+        var snapshot = transcript; snapshot.utterances = kept.reversed(); snapshot.completedTracks = []; snapshot.labelledTracks = []; snapshot.pruneTranscriptionOrigins()
         self.transcript = snapshot; truncated = kept.count < candidates.count
         self.start = min(lower, snapshot.utterances.first?.start ?? lower)
         digest = MeetingNotebook.digest(snapshot)
@@ -98,10 +98,12 @@ extension MeetingStore {
         let values = try url.resourceValues(forKeys: [.isSymbolicLinkKey, .fileSizeKey])
         guard values.isSymbolicLink != true, (values.fileSize ?? Int.max) <= 32000000 else { throw VoiceProblem.message("Live transcript exceeds its limit") }
         let result = try JSONDecoder().decode(MeetingTranscript.self, from: Data(contentsOf: url)); try result.validate()
+        guard result.transcriptionReview==nil else{throw VoiceProblem.message("This live draft contains unsupported review metadata; saved files are retained")}
         guard result.providerID == provider.rawValue else { throw VoiceProblem.message("Live transcript provider changed") }; return result
     }
     public func saveLiveTranscript(_ transcript: MeetingTranscript, id: UUID, provider: MeetingASRProvider) throws {
         _ = try load(id); try transcript.validate()
+        guard transcript.transcriptionReview==nil,transcript.transcriptionRevision==nil else{throw VoiceProblem.message("Transcription review must stay in its versioned refined file")}
         guard transcript.providerID == provider.rawValue else { throw VoiceProblem.message("Live transcript provider changed") }
         let data = try JSONEncoder().encode(transcript)
         guard data.count <= 32000000 else { throw VoiceProblem.message("Live transcript exceeds its limit") }

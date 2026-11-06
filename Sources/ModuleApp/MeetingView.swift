@@ -11,12 +11,12 @@ extension MeetingModel {
         }
         let matches = folderLibrary.filter { libraryQuery.isEmpty || (searchIDs?.contains($0.id) ?? $0.title.localizedCaseInsensitiveContains(libraryQuery)) }
         let listPage = min(max(0, libraryPage), max(0, (matches.count - 1) / 8))
-        let rows = matches.dropFirst(listPage * 8).prefix(8).map { ["id": $0.id.uuidString, "title": String(decoding: $0.title.utf8.prefix(120), as: UTF8.self), "date": $0.created.formatted(date: .abbreviated, time: .shortened), "duration": String(Int($0.duration)), "state": $0.state, "calendar": String((calendarLibrary[$0.id]?.event.title ?? "").prefix(80))] }
+        let rows = matches.dropFirst(listPage * 8).prefix(8).map { ["id": $0.id.uuidString, "title": String(decoding: $0.title.utf8.prefix(120), as: UTF8.self), "date": $0.created.formatted(date: .abbreviated, time: .shortened), "duration": String(Int($0.duration)), "state": $0.state, "transcriptionStatus": transcriptionSearchRecovery.contains($0.id) ? "Transcript review needs recovery" : (transcriptionSearchPending.contains($0.id) || (selected?.id==$0.id && transcript?.hasPendingTranscription==true)) ? "New recognition needs review" : "", "calendar": String((calendarLibrary[$0.id]?.event.title ?? "").prefix(80))] }
         let lines = (transcript?.utterances ?? []).sorted { $0.start == $1.start ? $0.id.uuidString < $1.id.uuidString : $0.start < $1.start }
         let page = active ? max(0, (lines.count - 1) / 8) : min(max(0, transcriptPage), max(0, (lines.count - 1) / 8))
         let utterances = lines.dropFirst(page * 8).prefix(8).map { line -> [String: String] in
             let text = line.id.uuidString == highlightedUtterance && !highlightedSourceText.isEmpty ? highlightedSourceText : line.correction ?? line.text
-            return ["id": line.id.uuidString, "start": String(line.start), "text": String(decoding: text.utf8.prefix(line.id.uuidString == highlightedUtterance ? 1100 : 700), as: UTF8.self), "speaker": line.speaker ?? "", "track": line.track, "truncated": (line.correction ?? line.text).utf8.count > 700 ? "yes" : "no", "excerpt": line.id.uuidString == highlightedUtterance && !highlightedSourceText.isEmpty ? "yes" : "no"]
+            return ["id": line.id.uuidString, "start": String(line.start), "text": String(decoding: text.utf8.prefix(line.id.uuidString == highlightedUtterance ? 1100 : 700), as: UTF8.self), "speaker": line.speaker ?? "", "track": line.track, "truncated": (line.correction ?? line.text).utf8.count > 700 ? "yes" : "no", "recognitionAlternative": transcript?.isKeptRecognitionAlternative(line.id) == true ? "yes" : "no", "excerpt": line.id.uuidString == highlightedUtterance && !highlightedSourceText.isEmpty ? "yes" : "no"]
         }
         // Source choice is relevant only while creating a meeting; avoid filling
         // the live/notes payload with a hidden app list. Keep the chosen app.
@@ -29,7 +29,7 @@ extension MeetingModel {
             scope: questionScope, thread: chatIdentity, canAsk: canAskMeeting, context: questionSnapshot?.context ?? [],
             history: notebookPage == "ask" && !calendarPickerOpen && questionSnapshot == nil ? chatViewTurns : [],
             historyPage: chatPage, historyPages: max(1, (meetingChat.turns.count + 1) / 2), historyCount: meetingChat.turns.count,
-            canRestore: store?.hasPreviousChat(chatOwner) ?? false, filter: questionLibraryFilter)
+            canRestore: permitMeetingWork() ? (store?.hasPreviousChat(chatOwner) ?? false) : false, filter: questionLibraryFilter)
         func eventRow(_ event: PluginCalendarEvent, id: String) -> MeetingCalendarViewState.Event {
             let from = Date(timeIntervalSince1970: event.start), to = Date(timeIntervalSince1970: event.end)
             let when = event.allDay ? from.formatted(date: .abbreviated, time: .omitted) + " · All day" : from.formatted(date: .abbreviated, time: .shortened) + " – " + to.formatted(date: .omitted, time: .shortened)
@@ -56,14 +56,17 @@ extension MeetingModel {
             "noteEvidencePaging": .string(json(["page": evidencePage, "pages": max(1, (evidenceItems.count + 5) / 6), "count": evidenceItems.count])),
             "liveEnabled": .boolean(liveEnabled), "liveStatus": .string(liveStatus), "liveDraft": .boolean(showingLiveTranscript),
             "hasLive": .boolean(hasLiveTranscript), "hasRefined": .boolean(hasRefinedTranscript),
+            "refinementNotice": .string(!showingLiveTranscript ? transcript?.liveRefinementSource?.notice ?? "" : ""),
             "partials": .string(json(notebookPage == "transcript" && !calendarPickerOpen ? liveState.partials.values.sorted { $0.start < $1.start }.map { ["track": $0.track, "start": String($0.start), "text": String(decoding: $0.text.utf8.prefix(700), as: UTF8.self)] } : [])),
             "catchUp": .string(json(["busy": catchingUp ? "yes" : "no", "status": catchUpStatus, "range": catchUpRange,
                                      "summary": notebookPage == "transcript" && !calendarPickerOpen ? catchUpNotes?.summary ?? "" : "", "decisions": notebookPage == "transcript" && !calendarPickerOpen ? catchUpNotes?.decisions ?? "" : "", "actions": notebookPage == "transcript" && !calendarPickerOpen ? catchUpNotes?.actions ?? "" : ""])),
+            "transcriptionReview": .string(json(transcriptionReviewView())),
             "notesStale": .boolean(notebook?.sourceDigest != nil && transcript.map { MeetingNotebook.digest($0) != notebook?.sourceDigest } != false),
             "summaryAvailable": .boolean(VoiceAudio.MeetingSummarizer.available), "summarizing": .boolean(summarizing),
         ]
         let detailState: [String: PluginValue] = [
             "phase": .string(phase), "status": .string(String(status.prefix(450))), "active": .boolean(active),
+            "searchNotice": .string(transcriptionSearchRecovery.isEmpty ? "" : "Some transcript copies need recovery. Search results may be incomplete; both versions are retained."),
             "libraryQuery": .string(libraryQuery), "library": .string(json(rows)), "libraryPage": .number(Double(listPage)), "libraryPages": .number(Double(max(1, (matches.count + 7) / 8))), "selected": .string(selected?.id.uuidString ?? ""), "title": .string(selected?.title ?? ""),
             "duration": .number(duration), "position": .number(playhead), "playing": .boolean(playing),
             "micLevel": .number(levels["mic"] ?? 0), "systemLevel": .number(levels["system"] ?? 0),
@@ -85,10 +88,18 @@ extension MeetingModel {
         if let data = try? JSONEncoder().encode(state), data.count > 32_768 {
             state["actionCards"] = .string("[]")
         }
+        let review=transcriptionReviewView()
+        if review.open {
+            state=MeetingTranscriptionViewFrame.state(review)
+        } else if review.count>0,let encoded=try? JSONEncoder().encode(state),encoded.count>32_768 {
+            // Offscreen data remains stored; render only the bounded comparison.
+            state=MeetingTranscriptionViewFrame.state(review)
+        }
         let events: [PluginViewEventDefinition] = [
+            .init("transcriptionReview",input:.init([.init("meeting",.string),.init("provider",.string),.init("revision",.string),.init("candidate",.string),.init("digest",.string),.init("choice",.string),.init("source",.string),.init("row",.number,minimum:0,maximum:39999),.init("offset",.number,minimum:0,maximum:32000000)])),
             .init("notebook", input: .init([.init("command", .string), .init("page", .string, required: false), .init("thoughts", .string, required: false), .init("summary", .string, required: false), .init("decisions", .string, required: false), .init("actions", .string, required: false), .init("reviewed", .boolean, required: false), .init("personal", .boolean, required: false), .init("seconds", .number, required: false), .init("question", .string, required: false), .init("provider", .string, required: false), .init("citation", .string, required: false), .init("date", .string, required: false), .init("offset", .number, required: false), .init("event", .string, required: false), .init("enabled", .boolean, required: false)])),
             .init("record", input: .init([.init("title", .string), .init("mic", .boolean), .init("source", .string), .init("live", .boolean)])),
-            .init("pause"), .init("resume"), .init("stop"), .init("refresh"), .init("play"),
+            .init("pause"), .init("resume"), .init("stop"), .init("play"),
             .init("seek", input: .init([.init("time", .number)])), .init("select", input: .init([.init("id", .string)])),
             .init("rename", input: .init([.init("title", .string)])), .init("files"), .init("delete"), .init("new"),
             .init("process", input: .init([.init("action", .string)])),
@@ -98,6 +109,7 @@ extension MeetingModel {
         return PluginCustomView(entry: "meetings/index.html", revision: selected?.viewRevision ?? "mlibrary", state: state, events: events)
     }
     func handle(_ event: PluginViewEvent) throws {
+        guard permitMeetingWork() else { throw CancellationError() }
         guard event.panelID == "meetings" else { throw VoiceProblem.message("Unknown meeting view") }; try definition.validate(event)
         guard !CommandLine.arguments.contains("--protocol-test") else { return }
         if importing {
@@ -105,9 +117,15 @@ extension MeetingModel {
             return
         }
         switch event.name {
+        case "transcriptionReview":
+            guard case .string(let meeting)=event.values["meeting"],case .string(let provider)=event.values["provider"],case .string(let revision)=event.values["revision"],
+                  case .string(let candidate)=event.values["candidate"],case .string(let digest)=event.values["digest"],case .string(let choice)=event.values["choice"],
+                  case .string(let source)=event.values["source"],case .number(let row)=event.values["row"],case .number(let offset)=event.values["offset"] else{return}
+            try handleTranscriptionReview(meeting:meeting,provider:provider,revision:revision,candidate:candidate,digest:digest,choice:choice,source:source,row:row,offset:offset)
         case "notebook":
             guard case .string(let command) = event.values["command"] else { return }
             switch command {
+            case "refresh": if !active { refreshSources(); refresh() }
             case "callStart", "callDismiss":
                 if case .string(let value) = event.values["event"], let id = UUID(uuidString: value) {
                     if command == "callStart" { acceptDetectedCall(id) } else { dismissDetectedCall(id) }
@@ -133,7 +151,7 @@ extension MeetingModel {
             case "questionSend": sendQuestion()
             case "questionStop": cancelQuestion(); questionStatus = "Question stopped · transcript unchanged"
             case "questionProvider": if !askingQuestion, case .string(let provider) = event.values["provider"], questionProviders.contains(where: { $0.address.key == provider }) { questionProvider = provider; questionSnapshot = nil }
-            case "chatFilter": if !askingQuestion, case .string(let filter) = event.values["question"], filter.utf8.count <= 512 { questionLibraryFilter = filter; UserDefaults.standard.set(filter, forKey: "meetingChatFilter"); questionSnapshot = nil }
+            case "chatFilter": if !askingQuestion, case .string(let filter) = event.values["question"], filter.utf8.count <= 512 { questionLibraryFilter = filter; storeMeetingPreference(filter, forKey: "meetingChatFilter"); questionSnapshot = nil }
             case "questionSource": if case .string(let citation) = event.values["citation"] { openQuestionSource(citation, turn: { if case .string(let id) = event.values["event"] { return id }; return "" }()) }
             case "noteSource": if case .string(let citation) = event.values["citation"] { openNoteSource(citation) }
             case "noteEvidencePage": if case .number(let offset) = event.values["offset"], offset.isFinite, offset.rounded() == offset, (0...4).contains(offset) { noteEvidencePage = Int(offset) }

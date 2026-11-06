@@ -56,6 +56,10 @@ public struct MeetingTranscript: Codable, Sendable {
     public var modelRevision: String?
     public var runtimeRevision: String?
     public var speakerModelRevision: String?
+    public var transcriptionReview: MeetingTranscriptionReview?
+    public var liveRefinementSource: MeetingLiveRefinementSource?
+    public var storageBinding: MeetingTranscriptStorageBinding? = nil
+    private enum CodingKeys: String, CodingKey { case utterances, names, completedTracks, labelledTracks, locale, providerID, modelRevision, runtimeRevision, speakerModelRevision, transcriptionReview, liveRefinementSource }
     public init(locale: String, provider: MeetingASRProvider = .apple, modelRevision: String? = nil, runtimeRevision: String? = nil) {
         self.locale = locale; self.providerID = provider.rawValue; self.modelRevision = modelRevision; self.runtimeRevision = runtimeRevision
     }
@@ -75,6 +79,11 @@ public struct MeetingTranscript: Codable, Sendable {
                   ["mic", "system"].contains(line.track), line.text.utf8.count <= 16000, (line.correction?.utf8.count ?? 0) <= 16000,
                   line.speaker == nil || Self.validSpeaker(line.speaker!) else { throw VoiceProblem.message("Invalid transcript segment") }
         }
+        if let source=liveRefinementSource {
+            try source.validate()
+            guard transcriptionReview != nil,source.provider.rawValue==providerID else{throw VoiceProblem.message("Invalid live refinement snapshot")}
+        }
+        try validateTranscriptionReview()
     }
     public static func validSpeaker(_ id: String) -> Bool { ["mic", "system"].contains { track in (0..<8).contains { id == "\(track)-\($0)" } } }
     /// Keep ambiguous/overlapping speech unassigned. A track does not establish identity.
@@ -91,6 +100,7 @@ public struct MeetingTranscript: Codable, Sendable {
         // Keep the word-level abstention through regrouping. Averaging an
         // overlap-ambiguous word with an under-covered word must not create a
         // confident phrase that neither word supports.
+        var carriedOrigins=transcriptionReview?.origins ?? [:]
         var uncertainGroups = Set<UUID>()
         var splitCursor = 0
         utterances = utterances.sorted { $0.start < $1.start }.flatMap { line -> [MeetingUtterance] in
@@ -124,6 +134,7 @@ public struct MeetingTranscript: Codable, Sendable {
                 var turn = MeetingUtterance(start: group.first!.start, end: group.last!.end, track: track,
                                             text: group.map(\.text).joined().trimmingCharacters(in: .whitespacesAndNewlines))
                 turn.words = group
+                if let original=carriedOrigins[line.id.uuidString]{carriedOrigins[turn.id.uuidString]=original}
                 if labels[index] == nil { uncertainGroups.insert(turn.id) }
                 return turn
             }
@@ -162,6 +173,7 @@ public struct MeetingTranscript: Codable, Sendable {
                 if names[id] == nil { names[id] = "\(track == "mic" ? "Room" : "Call") speaker \(best.key + 1)" }
             } else { utterances[index].speaker = nil }
         }
+        if transcriptionReview != nil{transcriptionReview?.origins=carriedOrigins;pruneTranscriptionOrigins()}
         if !labelledTracks.contains(track) { labelledTracks.append(track) }; try validate()
     }
     private static func unionSpeakerSpans(_ spans: [MeetingSpeakerSpan]) -> [MeetingSpeakerSpan] {
@@ -180,19 +192,27 @@ public struct MeetingTranscript: Codable, Sendable {
 }
 extension MeetingStore {
     public func transcript(_ id: UUID, provider: MeetingASRProvider = .apple) throws -> MeetingTranscript? {
-        _ = try load(id); let url = folder(id).appendingPathComponent(provider.transcriptFile)
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        let values = try url.resourceValues(forKeys: [.isSymbolicLinkKey, .fileSizeKey])
-        guard values.isSymbolicLink != true, (values.fileSize ?? Int.max) <= 32_000_000 else { throw VoiceProblem.message("Transcript exceeds its limit") }
-        let value = try JSONDecoder().decode(MeetingTranscript.self, from: Data(contentsOf: url)); try value.validate()
-        guard value.providerID == provider.rawValue || (provider == .apple && value.providerID == nil) else { throw VoiceProblem.message("Transcript provider does not match its file") }
-        return value
+        _ = try load(id);return try MeetingTranscriptStorage.read(folder:folder(id),id:id,provider:provider)
     }
-    public func saveTranscript(_ value: MeetingTranscript, id: UUID, provider: MeetingASRProvider = .apple) throws {
-        _ = try load(id); try value.validate()
-        guard value.providerID == provider.rawValue || (provider == .apple && value.providerID == nil) else { throw VoiceProblem.message("Transcript provider does not match its file") }
-        let data = try JSONEncoder().encode(value)
-        guard data.count <= 32_000_000 else { throw VoiceProblem.message("Transcript exceeds its limit") }
-        try data.write(to: folder(id).appendingPathComponent(provider.transcriptFile), options: .atomic)
+    public func prepareNewTranscript(_ id:UUID,provider:MeetingASRProvider = .apple,locale:String,modelRevision:String? = nil,runtimeRevision:String? = nil) throws -> MeetingTranscript {
+        _ = try load(id);return try MeetingTranscriptStorage.prepareNew(folder:folder(id),id:id,provider:provider,locale:locale,modelRevision:modelRevision,runtimeRevision:runtimeRevision)
+    }
+    /// First refined snapshot only. Existing refined records must be loaded instead.
+    public func prepareFirstRefinement(_ id:UUID,provider:MeetingASRProvider = .apple,locale:String,modelRevision:String? = nil,runtimeRevision:String? = nil) throws -> MeetingTranscript {
+        _ = try load(id);return try MeetingTranscriptStorage.prepareFirstRefinement(folder:folder(id),id:id,provider:provider,locale:locale,modelRevision:modelRevision,runtimeRevision:runtimeRevision)
+    }
+    @discardableResult public func saveTranscript(_ value: MeetingTranscript, id: UUID, provider: MeetingASRProvider = .apple) throws -> MeetingTranscript {
+        _ = try load(id);return try MeetingTranscriptStorage.save(value,folder:folder(id),id:id,provider:provider)
+    }
+    public func hasTranscriptV2(_ id: UUID, provider: MeetingASRProvider) -> Bool {
+        MeetingTranscriptStorage.exists(folder(id).appendingPathComponent("review-v2-"+provider.transcriptFile))
+    }
+    public func transcriptStorageByteCount(_ id: UUID, provider: MeetingASRProvider, live: Bool) throws -> Int? {
+        _ = try load(id)
+        let root=folder(id),v2=root.appendingPathComponent("review-v2-"+provider.transcriptFile)
+        let url = live ? root.appendingPathComponent("live-"+provider.transcriptFile) : (MeetingTranscriptStorage.exists(v2) ? v2 : root.appendingPathComponent(provider.transcriptFile))
+        let count=try MeetingTranscriptStorage.byteCount(url)
+        if !live,MeetingTranscriptStorage.exists(v2),let count { return count + (try MeetingTranscriptStorage.byteCount(root.appendingPathComponent(provider.transcriptFile)) ?? 0) }
+        return count
     }
 }

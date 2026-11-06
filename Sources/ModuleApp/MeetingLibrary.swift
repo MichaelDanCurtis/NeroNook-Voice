@@ -26,11 +26,12 @@ extension MeetingModel {
         if !["all", "unfiled"].contains(folderScope), !organization.folders.contains(where: { $0.id.uuidString == folderScope }) { folderScope = "all" }
     }
     func chooseFolder(_ scope: String) {
-        guard !occupied, questionSnapshot == nil, ["all", "unfiled"].contains(scope) || organization.folders.contains(where: { $0.id.uuidString == scope }) else { return }
-        folderScope = scope; UserDefaults.standard.set(scope, forKey: "meetingFolder"); libraryPage = 0
+        guard permitMeetingWork(), !occupied, questionSnapshot == nil, ["all", "unfiled"].contains(scope) || organization.folders.contains(where: { $0.id.uuidString == scope }) else { return }
+        folderScope = scope; storeMeetingPreference(scope, forKey: "meetingFolder"); libraryPage = 0
         resetQuestion(); searchLibrary(); organizationStatus = ""
     }
     func changeFolder(command: String, id: String, name: String) {
+        guard permitMeetingWork() else { return }
         guard !occupied, questionSnapshot == nil, let store, !organizationFailed || command == "folderUndo" else { return }
         do {
             var next = organization
@@ -63,43 +64,87 @@ extension MeetingModel {
         catch { organizationStatus = "Meeting saved in Unfiled. \(error.localizedDescription)" }
     }
     func chooseRecordingImport() {
-        guard !occupied, !organizationFailed, canStart?() != false else { return }
+        guard allowProductEffect(.externalFiles) else{return}
+        guard permitMeetingWork(), !occupied, !organizationFailed, canStart?() != false else { return }
         let panel = NSOpenPanel(); panel.title = "Import recording"; panel.message = "Choose audio or video. Nero Voice saves its own audio copy; your original stays intact."
         panel.prompt = "Import recording"; panel.canChooseDirectories = false; panel.canChooseFiles = true; panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.audio, .movie] + ["caf", "m4a", "mp3", "wav", "aiff", "mp4", "mov", "flac"].compactMap { UTType(filenameExtension: $0) }
         panel.directoryURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-        importPicker = panel; choosingImport = true
+        let originalOwner = LocalFoundationModelWork.currentOwner
+        // This reserves the original completion before the native begin.
+        let admission = MeetingFilePanelCompletion()
+        importPicker = panel; importPickerOwner = originalOwner; importPickerAdmission = admission; choosingImport = true
         NSApp.activate(ignoringOtherApps: true)
-        panel.begin { [weak self] response in Task { @MainActor in
-            guard let self else { return }; self.importPicker = nil; self.choosingImport = false
-            guard response == .OK, let url = panel.url, !self.occupied else { return }; self.importRecording(url)
-        } }
+        guard importPicker === panel, permitMeetingWork(), admission.begin() else {
+            _ = closeImportPicker(owner: originalOwner)
+            return
+        }
+        panel.begin { [weak self] response in
+            admission.deliver { @MainActor in
+                guard let self, self.importPicker === panel else { return }
+                defer {
+                    if self.importPicker === panel {
+                        self.importPicker = nil; self.importPickerOwner = nil; self.importPickerAdmission = nil
+                    }
+                }
+                self.choosingImport = false
+                guard response == .OK, let url = panel.url, !self.occupied else { return }
+                LocalFoundationModelWork.$currentOwner.withValue(originalOwner) { self.importRecording(url) }
+            }
+        }
+        guard importPicker === panel, permitMeetingWork() else { return }
         panel.makeKeyAndOrderFront(nil)
     }
     func importRecording(_ source: URL) {
-        guard !occupied, !organizationFailed, let store, canStart?() != false else { return }
+        guard allowProductEffect(.externalFiles) else{return}
+        guard permitMeetingWork(), !occupied, !organizationFailed, let store, canStart?() != false else { return }
         stopPlayback(); resetCatchUp(); resetQuestion(); cancelCalendar(); calendarPickerOpen = false
+        let originalOwner = LocalFoundationModelWork.currentOwner
+        importOwner = originalOwner
         let scope = folderScope, epoch = UUID(); importEpoch = epoch; importing = true; importProgress = 0; importStatus = "Importing \(source.lastPathComponent)…"
-        let progress = ImportProgress { [weak self] value in Task { @MainActor in
-            guard let self, self.importEpoch == epoch, self.importing else { return }; self.importProgress = value
-        } }
+        let progressCallbacks = VoiceAudioCallbackAdmission()
+        let progress = ImportProgress { [weak self] value in
+            guard let entered = progressCallbacks.enter() else { return }
+            Task { @MainActor in
+                defer { entered.finish() }
+                guard let self, self.importEpoch == epoch, self.importing else { return }; self.importProgress = value
+            }
+        }
         let worker = Task.detached(priority: .utility) { try await MeetingRecordingImport.run(source: source, store: store) { progress.update($0) } }
         importWorker = worker
         importTask = Task { [weak self] in
+            let result: Result<Meeting, Error>
+            do { result = .success(try await worker.value) } catch { result = .failure(error) }
+            // The worker is the sole progress producer. Once it has returned,
+            // seal and join every already-enqueued MainActor progress delivery.
+            progressCallbacks.seal(); progressCallbacks.nativeStopReturned()
+            await progressCallbacks.waitForReturn()
             do {
-                let meeting = try await worker.value
+                let meeting = try result.get()
                 guard let self, self.importEpoch == epoch else { return }
+                if Task.isCancelled || !self.meetingFileTasks.permits(originalOwner) {
+                    // The original worker can commit just before cancellation.
+                    // Preserve the result but do not publish it as a new action.
+                    self.meetingFileUncertain.insert(originalOwner)
+                    self.importing = false; self.importWorker = nil; self.importTask = nil
+                    self.importStatus = "Import stopped · existing files are retained"; return
+                }
                 self.importing = false; self.importWorker = nil; self.importTask = nil
                 let duplicate = self.library.contains { $0.id == meeting.id }; if !duplicate { self.fileNewMeeting(meeting.id, scope: scope) }; self.refresh(); self.select(meeting.id); self.notebookPage = "transcript"
                 self.importStatus = duplicate ? "Already imported · opened the existing meeting" : "Imported · original unchanged"; self.status = "Recording saved on this Mac · choose Transcribe to create its transcript"
             } catch {
                 guard let self, self.importEpoch == epoch else { return }
+                if Task.isCancelled { self.meetingFileUncertain.insert(originalOwner) }
                 self.importing = false; self.importWorker = nil; self.importTask = nil
                 self.importStatus = error is CancellationError ? "Import cancelled · no partial recording saved" : "Import failed: \(error.localizedDescription)"
             }
         }
+        retainMeetingTask(importTask, owner: originalOwner)
     }
-    func cancelImport() { guard importing else { return }; importWorker?.cancel(); importStatus = "Cancelling import…" }
+    func cancelImport(force: Bool = false) {
+        guard importing, force || importOwner == LocalFoundationModelWork.currentOwner else { return }
+        importWorker?.cancel(); importStatus = "Cancelling import…"
+    }
 }
 
 private final class ImportProgress: @unchecked Sendable {

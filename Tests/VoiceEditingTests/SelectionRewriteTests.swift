@@ -69,9 +69,10 @@ import ModuleCore
         XCTAssertEqual(editor.writes, 0); XCTAssertNil(model.capture); XCTAssertEqual(model.result, ""); XCTAssertEqual(editor.forgets, 1)
         model.apply(); model.undo(); XCTAssertEqual(editor.writes, 0)
     }
-    func testOnlyExplicitDismissalReturnsFocus() throws {
+    func testOnlyExplicitDismissalReturnsFocus() async throws {
         let editor = try Editor(); let model = SelectionRewrite(editor: editor) { _, _ in "new" }
         try model.begin(); model.close(); XCTAssertEqual(editor.focusReturns, 0)
+        await model.retirementCompletion()?.value
         try model.begin(); model.close(returnToEditor: true); XCTAssertEqual(editor.focusReturns, 1); XCTAssertEqual(editor.writes, 0)
     }
     func testPrewriteFocusFailureCanBeRetriedOnlyByAnotherExplicitApply() async throws {
@@ -96,8 +97,14 @@ import ModuleCore
         let model = SelectionRewrite(editor: editor) { _, _ in try await withCheckedThrowingContinuation { resume = $0 } }
         try model.begin(); model.transform()
         for _ in 0..<30 where resume == nil { await Task.yield() }
-        model.close(); try model.begin(); resume?.resume(returning: "late private result")
-        for _ in 0..<30 { await Task.yield() }
+        let response = try XCTUnwrap(resume)
+        model.close()
+        XCTAssertThrowsError(try model.begin()) // Original callback is still held.
+        let retirement = try XCTUnwrap(model.retirementCompletion())
+        response.resume(returning: "late private result")
+        await retirement.value
+        XCTAssertEqual(model.phase, .closed); XCTAssertEqual(model.result, "")
+        try model.begin()
         XCTAssertEqual(model.result, "original"); XCTAssertEqual(model.phase, .reviewing); XCTAssertEqual(editor.writes, 0); model.close()
     }
     func testExpiryStillClosesAfterGenerationChangesEpoch() async throws {

@@ -1,0 +1,32 @@
+{
+  "id": "cafe.nero.plugin.voice",
+  "name": "Nero Voice",
+  "version": "__VERSION__",
+  "apiVersion": 1,
+  "summary": "Full Nero Voice interface for the isolated local pairing trial; audio, models, accounts and system controls remain disabled.",
+  "capabilities": [
+    "Records selected microphone only after dictation, meeting, Talk or reference-recording controls; no launch/hover recording",
+    "Apple speech default; optional MLX ASR. Local Qwen presets, cloned references and voice descriptions; shared full/half duplex Talk, no cloud audio.",
+    "Accessibility supports cursor dictation and selected-text local rewrite previews, exact replacement and guarded Undo; never presses Send.",
+    "Per-app Clean/Formal/Literal styles and explicit spoken snippets; optional on-device grammar editing preserves saved snippet text",
+    "Shows live focus-free words and recording levels in the Nook or optional bottom captions for Apple Speech and Nemotron; Parakeet transcribes after release",
+    "Opt-in local text history with expiry and erase; clipboard is temporarily used and restored for insertion",
+    "Offers notes for detected Teams calls; records only after Start notes, with microphone plus chosen app audio. Browser capture includes other tabs.",
+    "Saved recording, transcripts and notes can share a local link to an explicitly selected calendar occurrence via separately permitted SDK reads",
+    "Local folders and recording imports preserve original files; transcripts and notes retain their optional exact calendar link",
+    "One recognition model at a time; Qwen has a separate bounded speech model. Nemotron labels up to eight Room and eight Call speakers.",
+    "Bundled local runtimes; no separate Python or cloud audio service. What did I miss uses Apple's model to select settled recent words.",
+    "Saves meeting chats locally. Send shares previewed excerpts, labels and recent chat for cited answers across saved meetings; excludes audio and private notes."
+  ],
+  "launchMode": "sharedApplication",
+  "icon": {
+    "symbol": "waveform",
+    "color": "FFA2C9"
+  },
+  "sharedApplication": {
+    "protocolVersion": 1,
+    "connectorBundleIdentifier": "cafe.nero.connector.voice.isolated074",
+    "serviceIdentifier": "cafe.nero.voice.isolated074",
+    "resourceRevision": "__VIEWS_REVISION__"
+  }
+}

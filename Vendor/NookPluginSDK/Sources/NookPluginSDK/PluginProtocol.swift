@@ -8,12 +8,20 @@ public struct PluginManifest: Codable, Equatable, Sendable, Identifiable {
     public var summary: String
     public var capabilities: [String]
     public var launchMode: String? = nil
+    /// Opt-in connector metadata only; native trust and user consent are separate.
+    public var sharedApplication: PluginSharedApplicationDescriptor? = nil
     public var icon: PluginIcon? = nil
     public var assistant: PluginAssistantIdentity? = nil
     public func validate() throws {
         try icon?.validate()
         try assistant?.validate()
-        guard launchMode == nil || launchMode == "application" else { throw ModuleProblem("Unsupported plugin launch mode.") }
+        if launchMode == "sharedApplication" {
+            guard let sharedApplication else { throw ModuleProblem("Shared application descriptor is required.") }
+            try sharedApplication.validate()
+        } else {
+            guard launchMode == nil || launchMode == "application" else { throw ModuleProblem("Unsupported plugin launch mode.") }
+            guard sharedApplication == nil else { throw ModuleProblem("Shared application descriptor requires sharedApplication launch mode.") }
+        }
         guard apiVersion == 1 else { throw ModuleProblem("This plugin requires a different plugin interface version.") }
         guard id.range(of: #"^[a-z][a-z0-9]*(\.[a-z][a-z0-9-]*)+$"#, options: .regularExpression) != nil,
               id.count <= 100, !name.isEmpty, name.count <= 80, summary.count <= 500,

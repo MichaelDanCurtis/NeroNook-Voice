@@ -71,13 +71,26 @@ public struct MeetingNotebook: Codable, Equatable, Sendable {
     public func isCurrent(for transcript: MeetingTranscript) -> Bool {
         sourceDigest == Self.digest(transcript)
     }
-    public var searchableText: String { [thoughts, summary, decisions, actions, taskChanges].joined(separator: "\n") }
+    /// Display structured actions with the current owner policy without
+    /// rewriting their saved fields or evidence. Manual/legacy lists stay exact.
+    private var presentedActions: String {
+        guard let actionResolutions else { return actions }
+        // Validate the complete notebook before indexing evidence or converting
+        // clocks to Int. Malformed structured notes produce no partial list.
+        guard (try? validate()) != nil else { return "Saved action items unavailable · review the notes." }
+        return actionResolutions.filter { $0.status == .active }.map { item in
+            let time = Int(item.evidence[0].start)
+            return String(format: "[%02d:%02d] ", time / 60, time % 60) + item.presentedFact
+        }.joined(separator: "\n")
+    }
+    public var searchableText: String { [thoughts, summary, decisions, presentedActions, taskChanges].joined(separator: "\n") }
     public func markdown(title: String, includeThoughts: Bool) -> String {
         var text = "# \(title)\n\n"
         if includeThoughts && !thoughts.isEmpty { text += "## My thoughts\n\n\(thoughts)\n\n" }
         if !summary.isEmpty { text += "## Summary\(reviewed ? "" : " · draft")\n\n\(summary)\n\n" }
         if !decisions.isEmpty { text += "## Decisions\n\n\(decisions)\n\n" }
-        if !actions.isEmpty { text += "## Action items\n\n\(actions)\n\n" }
+        let displayedActions = presentedActions
+        if !displayedActions.isEmpty { text += "## Action items\n\n\(displayedActions)\n\n" }
         if !taskChanges.isEmpty { text += "## Task changes and questions\n\n\(taskChanges)\n\n" }
         return text
     }

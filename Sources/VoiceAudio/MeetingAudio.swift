@@ -134,6 +134,19 @@ public final class MeetingAudioWriter: @unchecked Sendable {
         } }
     }
     public func finishSynchronously() { queue.sync { _ = try? finalize(state: "saved", issue: "Voice closed; recording was saved.") } }
+    /// A failed finalize can leave later tracks in the owned file dictionary.
+    /// Close every remaining own file on the original serial writer queue; the
+    /// caller retains the original error and must not infer successful saving.
+    public func closeAfterFailure() async -> Int {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                self.active = false
+                let ownedFiles = self.files.count
+                self.files.removeAll(); self.converters.removeAll(); self.inputFormats.removeAll()
+                self.publishSnapshot(); continuation.resume(returning: ownedFiles)
+            }
+        }
+    }
     private func drainConverter(_ track: String) throws {
         guard let converter = converters[track] else { return }
         for _ in 0..<16 {

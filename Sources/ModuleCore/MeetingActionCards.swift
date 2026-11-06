@@ -21,7 +21,7 @@ public struct MeetingActionCard: Encodable, Sendable {
 extension MeetingNotebook {
     public var actionCards: [MeetingActionCard] {
         if let actionResolutions {
-            return actionResolutions.map { .init(id: $0.id.uuidString, task: $0.task, owner: $0.owner,
+            return actionResolutions.map { .init(id: $0.id.uuidString, task: $0.task, owner: $0.presentedOwner,
                 deadline: $0.deadline, status: $0.status.rawValue, sources: $0.evidence.map(MeetingActionCard.Source.init)) }
         }
         return (evidence ?? []).filter { $0.section == .actions }.prefix(12).map {

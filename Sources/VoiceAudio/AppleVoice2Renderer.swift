@@ -14,8 +14,18 @@ import Darwin
     private var player: AVAudioPlayer?
     private var task: Task<Void, Never>?
     private var folder: URL?
+    private static let retirement = SpeechWorkerRetirement()
+    var workerRetirementIsOwned: Bool { Self.retirement.busy }
+    func workerRetirementCompletion() -> Task<Void, Never>? { Self.retirement.completion() }
+    private func retireSession() {
+        guard let original = session else { return }
+        session = nil; original.stop()
+        Self.retirement.retain(original.retirementCompletion())
+    }
     func prepare() throws {
         if session?.usable == true { return }
+        retireSession()
+        guard !Self.retirement.busy else { throw VoiceProblem.message("The previous Apple renderer is still stopping.") }
         guard let helper = Bundle.main.url(forResource: "apple_voice", withExtension: "swift", subdirectory: "Speech"),
               FileManager.default.isExecutableFile(atPath: "/usr/bin/swift"),
               FileManager.default.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else {
@@ -31,12 +41,18 @@ import Darwin
         let output = directory.appendingPathComponent("voice.wav")
         let input = try JSONSerialization.data(withJSONObject: ["id": id.uuidString, "text": text, "outputPath": output.path,
             "rate": Double(delivery.rate), "pitchMultiplier": Double(delivery.pitch), "voiceIdentifier": Self.identifier, "volume": 1.0, "sentencePause": 0.0])
-        do { try prepare() } catch { try? FileManager.default.removeItem(at: directory); throw error }
-        guard let session else { throw VoiceProblem.message("Local speech renderer unavailable") }
         token = id; folder = directory
         task = Task { [weak self] in
+            guard let self else { try? FileManager.default.removeItem(at: directory); return }
+            if self.session?.usable == false { self.retireSession() }
+            let originalRetirement = Self.retirement.completion()
+            await originalRetirement?.value
+            guard self.token == id, !Task.isCancelled else { try? FileManager.default.removeItem(at: directory); return }
+            do { try self.prepare() }
+            catch { self.stop(); self.finished?(error.localizedDescription); return }
+            guard let session = self.session else { self.stop(); self.finished?("Local speech renderer unavailable"); return }
             let receipt = try? await session.render(input, id: id)
-            guard let self, self.token == id, !Task.isCancelled else { try? FileManager.default.removeItem(at: directory); return }
+            guard self.token == id, !Task.isCancelled else { try? FileManager.default.removeItem(at: directory); return }
             self.task = nil
             guard let receipt, let value = try? JSONSerialization.jsonObject(with: receipt) as? [String: Any],
                   value["ok"] as? Bool == true, value["id"] as? String == id.uuidString,
@@ -69,7 +85,7 @@ import Darwin
         engineOutput?.stopPlayback(); player?.delegate = nil; player?.stop(); player = nil
         if let folder { try? FileManager.default.removeItem(at: folder) }; folder = nil
     }
-    func shutdown() { stop(); session?.stop(); session = nil }
+    @discardableResult func shutdown() -> Task<Void, Never>? { stop(); retireSession(); return Self.retirement.completion() }
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         Task { @MainActor [weak self, player] in
             guard let self, self.player === player else { return }

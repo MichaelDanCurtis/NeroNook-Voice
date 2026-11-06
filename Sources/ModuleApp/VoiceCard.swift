@@ -26,11 +26,14 @@ extension VoiceModel {
             .init("command", input: .init([.init("value", .string)])),
             .init("edit", input: .init([.init("text", .string)]))
         ], ownsChrome: true)
+        view.state["effectsAvailable"] = .boolean(!configuration.isolated)
+        view.state["effectStatus"] = .string(configuration.isolated ? configuration.reason:"")
         view.avatarReactions=true;view.avatarPlayback=avatarPlayback
         view.state["reactionSpeaking"] = .boolean(avatarPlayback != nil)
         return view
     }
     func handleVoice(_ event: PluginViewEvent) throws {
+        try serviceBeginLocal?()
         guard event.panelID == "voice" else { throw VoiceProblem.message("Unknown voice view") }
         if event.name == PluginAvatarPlayback.event {try handleAvatar(event);return}
         try voiceDefinition.validate(event)

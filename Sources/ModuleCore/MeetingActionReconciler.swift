@@ -28,6 +28,8 @@ public enum MeetingActionReconciler {
         let commitment = try NSRegularExpression(pattern: "(?i)\\b(" + owners + ")(?:\\s+(?:will|shall)|['’]ll)\\s+")
         var tasks: [TaskState] = []
         for (index, line) in lines.enumerated() {
+            // A retained alternate is not evidence of a second spoken commitment.
+            if transcript.isKeptRecognitionAlternative(line.id){continue}
             let text = MeetingActionResolution.words(line)
             // A fresh explicit cancellation is not a new task called 'cancel'.
             var recognized = false
@@ -35,7 +37,11 @@ public enum MeetingActionReconciler {
                 let contextual = sentence.range(of: #"\b(if|might|could|should|consider(?:ed|ing)?|discuss(?:ed|ing)?|said|says|heard|example|quoted|hypothetical)\b"#, options: [.regularExpression, .caseInsensitive]) != nil
                 if !contextual, let cancel = capture(#"\b(?:cancel|cancelled|canceled|cancelling|canceling)\s+(.+)"#, sentence) {
                     let candidates = matching(cancel, tasks: tasks)
-                    if candidates.count == 1 {
+                    if negatedCancellation(sentence) {
+                        // A refusal to cancel is not a cancellation or a new
+                        // task. Preserve the existing owner/deadline evidence.
+                        recognized = recognized || !candidates.isEmpty
+                    } else if candidates.count == 1 {
                         let found = candidates[0]; tasks[found].status = "cancelled"; tasks[found].changeSource = index
                         recognized = true
                     } else if !candidates.isEmpty {
@@ -144,6 +150,10 @@ public enum MeetingActionReconciler {
             guard tasks.count <= 12 else { throw VoiceProblem.message("More than twelve task candidates need review. Existing notes are retained.") }
         }
         return tasks.map(\.proposal)
+    }
+    private static func negatedCancellation(_ value: String) -> Bool {
+        value.range(of: #"\b(?:not|never|don['’]t|doesn['’]t|didn['’]t|haven['’]t|hasn['’]t|hadn['’]t|isn['’]t|aren['’]t|wasn['’]t|weren['’]t|won['’]t|wouldn['’]t|shouldn['’]t|mustn['’]t|can['’]t|couldn['’]t)(?:\s+(?:actually|yet|been|be))?\s+cancel(?:led|ed|ling|ing)?\b"#,
+                    options: [.regularExpression, .caseInsensitive]) != nil
     }
     private static func clean(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ".;!?,")))

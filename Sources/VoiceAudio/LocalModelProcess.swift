@@ -22,10 +22,10 @@ import ModuleCore
         guard active?.isRunning != true else { throw VoiceProblem.message("The previous local model is still stopping. Try again in a moment.") }
         try process.run(); active = process
     }
-    static func stop(_ process: Process) {
-        guard process.isRunning else { return }
+    @discardableResult static func stop(_ process: Process) -> Task<Void, Never>? {
+        guard process.isRunning else { return nil }
         process.terminate()
-        Task {
+        return Task {
             try? await Task.sleep(for: .seconds(1))
             if process.isRunning { kill(process.processIdentifier, SIGKILL) }
         }
