@@ -183,17 +183,26 @@ final class VoiceNormalEnrollmentTests: XCTestCase {
 }
 
 @MainActor private final class NormalHeldPrompt:VoiceNormalEnrollmentPrompt {
-    private let entered=AsyncStream<Void>.makeStream(),cancelled=AsyncStream<Void>.makeStream(),responses=AsyncStream<Bool>.makeStream()
+    private let entered=AsyncStream<Void>.makeStream(),cancelled=AsyncStream<Void>.makeStream()
+    // Native sheet callbacks still belong to their original owner after Task
+    // cancellation. AsyncStream iteration ends on cancellation and cannot model
+    // that join; keep the authored callback pending until answer() returns it.
+    private var response: CheckedContinuation<Bool, Never>?
+    private var bufferedAnswer: Bool?
     private let immediate:Bool?
     private(set)var confirmations=0
     init(answer:Bool?=nil){immediate=answer}
     func confirm(_ opportunity:VoiceNormalEnrollment, parent:VoiceEnrollmentWindowAnchor.Snapshot?)async->Bool{
         confirmations+=1;entered.continuation.yield(());entered.continuation.finish()
         if let immediate{return immediate}
-        for await response in responses.stream{return response};return false
+        if let bufferedAnswer { return bufferedAnswer }
+        return await withCheckedContinuation { response = $0 }
     }
     func cancel(){cancelled.continuation.yield(());cancelled.continuation.finish()}
-    func answer(_ value:Bool){responses.continuation.yield(value);responses.continuation.finish()}
+    func answer(_ value:Bool){
+        bufferedAnswer=value
+        let original=response;response=nil;original?.resume(returning:value)
+    }
     func waitEntered()async{for await _ in entered.stream{}}
     func waitCancelled()async{for await _ in cancelled.stream{}}
 }
